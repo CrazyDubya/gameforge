@@ -1,0 +1,20 @@
+# Build outputs
+build/
+dist/
+
+# Harness output: frame dumps, rendered audio, encoded media
+out/
+out2/
+run/
+media/
+docs/
+*.png
+!*/assets/title-source.png
+!*/assets/scenes-rc1.png
+!*/assets/story-rc1.png
+*.wav
+*.gif
+
+# Editors
+*.swp
+.DS_Store

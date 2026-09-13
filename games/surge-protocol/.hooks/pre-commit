@@ -1,0 +1,271 @@
+#!/bin/bash
+
+# SURGE PROTOCOL - Pre-commit Hook
+# Validates schema integrity before allowing commits
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo "========================================"
+echo "  SURGE PROTOCOL - Pre-commit Checks"
+echo "========================================"
+
+# Track if any checks fail
+FAILED=0
+
+# 1. Check if migration files are being modified
+STAGED_MIGRATIONS=$(git diff --cached --name-only | grep "^migrations/" || true)
+
+if [ -n "$STAGED_MIGRATIONS" ]; then
+    echo -e "\n${YELLOW}[CHECK]${NC} Migration files being modified:"
+    echo "$STAGED_MIGRATIONS"
+
+    # Warn about modifying existing migrations
+    for file in $STAGED_MIGRATIONS; do
+        if git show HEAD:"$file" > /dev/null 2>&1; then
+            echo -e "${RED}[WARNING]${NC} Modifying existing migration: $file"
+            echo "  Consider creating a new migration instead of modifying existing ones."
+        fi
+    done
+fi
+
+# 2. Check schema documentation files
+STAGED_DOCS=$(git diff --cached --name-only | grep -E "^[0-9]+.*\.md$" || true)
+
+if [ -n "$STAGED_DOCS" ]; then
+    echo -e "\n${YELLOW}[CHECK]${NC} Schema documentation being modified:"
+    echo "$STAGED_DOCS"
+fi
+
+# 3. Validate migration file naming
+echo -e "\n${YELLOW}[CHECK]${NC} Validating migration file naming..."
+
+if [ -d "$ROOT_DIR/migrations" ]; then
+    NAMING_FAILED=0
+    for file in "$ROOT_DIR"/migrations/*.sql; do
+        if [ -f "$file" ]; then
+            filename=$(basename "$file")
+            # Skip helper scripts like apply_all.sql
+            if [[ $filename == "apply_all.sql" ]]; then
+                continue
+            fi
+            if ! [[ $filename =~ ^[0-9]{4}_ ]]; then
+                echo -e "${RED}[ERROR]${NC} Invalid migration filename: $filename"
+                echo "  Migration files must start with 4 digits (e.g., 0001_name.sql)"
+                NAMING_FAILED=1
+                FAILED=1
+            fi
+        fi
+    done
+
+    if [ $NAMING_FAILED -eq 0 ]; then
+        echo -e "${GREEN}[OK]${NC} All migration filenames valid"
+    fi
+fi
+
+# 4. Check for required tables in migrations
+echo -e "\n${YELLOW}[CHECK]${NC} Checking for required core tables..."
+
+REQUIRED_TABLES=(
+    "characters"
+    "attribute_definitions"
+    "tracks"
+    "specializations"
+    "tier_definitions"
+    "augment_definitions"
+    "skill_definitions"
+    "item_definitions"
+    "mission_definitions"
+    "factions"
+)
+
+if [ -d "$ROOT_DIR/migrations" ]; then
+    ALL_SQL=$(cat "$ROOT_DIR"/migrations/*.sql 2>/dev/null || echo "")
+
+    MISSING_TABLES=()
+    for table in "${REQUIRED_TABLES[@]}"; do
+        if ! echo "$ALL_SQL" | grep -qi "CREATE TABLE.*$table"; then
+            MISSING_TABLES+=("$table")
+        fi
+    done
+
+    if [ ${#MISSING_TABLES[@]} -gt 0 ]; then
+        echo -e "${RED}[ERROR]${NC} Missing required tables:"
+        for table in "${MISSING_TABLES[@]}"; do
+            echo "  - $table"
+        done
+        FAILED=1
+    else
+        echo -e "${GREEN}[OK]${NC} All required core tables present"
+    fi
+fi
+
+# 5. Check for dangerous SQL patterns
+echo -e "\n${YELLOW}[CHECK]${NC} Checking for dangerous SQL patterns..."
+
+if [ -d "$ROOT_DIR/migrations" ]; then
+    DANGEROUS_FOUND=0
+
+    # Check for DROP DATABASE
+    if grep -rqi "DROP DATABASE" "$ROOT_DIR/migrations/"; then
+        echo -e "${RED}[ERROR]${NC} Found DROP DATABASE statement"
+        DANGEROUS_FOUND=1
+    fi
+
+    # Check for TRUNCATE without IF EXISTS
+    if grep -rqiE "TRUNCATE TABLE [^I]" "$ROOT_DIR/migrations/"; then
+        echo -e "${RED}[WARNING]${NC} Found TRUNCATE without safety check"
+    fi
+
+    # Check for DELETE without WHERE
+    if grep -rqiE "DELETE FROM \w+\s*;" "$ROOT_DIR/migrations/"; then
+        echo -e "${RED}[WARNING]${NC} Found DELETE without WHERE clause"
+    fi
+
+    if [ $DANGEROUS_FOUND -eq 1 ]; then
+        FAILED=1
+    else
+        echo -e "${GREEN}[OK]${NC} No dangerous patterns found"
+    fi
+fi
+
+# 6. Check for enum table consistency
+echo -e "\n${YELLOW}[CHECK]${NC} Validating enum table structure..."
+
+if [ -d "$ROOT_DIR/migrations" ]; then
+    ENUM_COUNT=$(grep -c "CREATE TABLE.*enum_" "$ROOT_DIR"/migrations/*.sql 2>/dev/null | awk -F: '{sum+=$2} END {print sum}')
+
+    if [ "$ENUM_COUNT" -lt 30 ]; then
+        echo -e "${YELLOW}[WARNING]${NC} Expected ~36 enum tables, found $ENUM_COUNT"
+    else
+        echo -e "${GREEN}[OK]${NC} Found $ENUM_COUNT enum tables"
+    fi
+fi
+
+# 7. Run schema validation script if it exists and Node is available
+if [ -f "$ROOT_DIR/scripts/validate-schema.js" ] && command -v node &> /dev/null; then
+    echo -e "\n${YELLOW}[CHECK]${NC} Running schema validation script..."
+
+    if node "$ROOT_DIR/scripts/validate-schema.js"; then
+        echo -e "${GREEN}[OK]${NC} Schema validation passed"
+    else
+        echo -e "${RED}[ERROR]${NC} Schema validation failed"
+        FAILED=1
+    fi
+fi
+
+# 7b. Frontend validation (if frontend files are staged)
+STAGED_FRONTEND=$(git diff --cached --name-only | grep "^frontend/" || true)
+
+if [ -n "$STAGED_FRONTEND" ]; then
+    echo -e "\n${YELLOW}[CHECK]${NC} Frontend files being modified:"
+    echo "$STAGED_FRONTEND" | head -5
+    [ $(echo "$STAGED_FRONTEND" | wc -l) -gt 5 ] && echo "  ... and more"
+
+    # Run frontend validation script
+    if [ -f "$ROOT_DIR/scripts/validate-frontend.js" ] && command -v node &> /dev/null; then
+        echo -e "\n${YELLOW}[CHECK]${NC} Running frontend validation..."
+        if node "$ROOT_DIR/scripts/validate-frontend.js"; then
+            echo -e "${GREEN}[OK]${NC} Frontend validation passed"
+        else
+            echo -e "${RED}[ERROR]${NC} Frontend validation failed"
+            FAILED=1
+        fi
+    fi
+
+    # Run design token tests
+    if [ -f "$ROOT_DIR/tests/design-tokens.test.js" ] && command -v node &> /dev/null; then
+        echo -e "\n${YELLOW}[CHECK]${NC} Running design token tests..."
+        if node --test "$ROOT_DIR/tests/design-tokens.test.js" 2>&1 | grep -q "pass"; then
+            echo -e "${GREEN}[OK]${NC} Design token tests passed"
+        else
+            echo -e "${RED}[ERROR]${NC} Design token tests failed"
+            FAILED=1
+        fi
+    fi
+fi
+
+# 8. Check for schema doc files
+echo -e "\n${YELLOW}[CHECK]${NC} Checking schema documentation..."
+
+SCHEMA_DOCS=(
+    "1CoreCharacter.md"
+    "2Augmentation.md"
+    "3SkillsEquipment.md"
+    "4MissionWorldNPC.md"
+    "5EconomyContracts.md"
+    "6CombatStatus.md"
+    "7narrativedialogue.md"
+    "8MetaSystems.md"
+    "9Persistence.md"
+    "10MultiplayerSocial.md"
+    "11AnalyticsConfigEnum.md"
+)
+
+MISSING_DOCS=()
+for doc in "${SCHEMA_DOCS[@]}"; do
+    if [ ! -f "$ROOT_DIR/$doc" ]; then
+        MISSING_DOCS+=("$doc")
+    fi
+done
+
+if [ ${#MISSING_DOCS[@]} -gt 0 ]; then
+    echo -e "${YELLOW}[WARNING]${NC} Missing schema docs:"
+    for doc in "${MISSING_DOCS[@]}"; do
+        echo "  - $doc"
+    done
+else
+    echo -e "${GREEN}[OK]${NC} All schema documentation present"
+fi
+
+# 9. TypeScript type checking (if src files are staged)
+STAGED_TS=$(git diff --cached --name-only | grep "^src/.*\.ts$" || true)
+
+if [ -n "$STAGED_TS" ] && [ -f "$ROOT_DIR/tsconfig.json" ] && command -v npx &> /dev/null; then
+    echo -e "\n${YELLOW}[CHECK]${NC} Running TypeScript type check..."
+
+    if npx tsc --noEmit 2>/dev/null; then
+        echo -e "${GREEN}[OK]${NC} TypeScript check passed"
+    else
+        echo -e "${RED}[ERROR]${NC} TypeScript type errors found"
+        FAILED=1
+    fi
+fi
+
+# 10. Run unit tests for modified modules
+STAGED_MECHANICS=$(git diff --cached --name-only | grep "^src/game/mechanics/.*\.ts$" || true)
+
+if [ -n "$STAGED_MECHANICS" ] && [ -f "$ROOT_DIR/vitest.config.ts" ] && command -v npx &> /dev/null; then
+    echo -e "\n${YELLOW}[CHECK]${NC} Running unit tests for game mechanics..."
+
+    if npx vitest run --reporter=dot 2>/dev/null; then
+        echo -e "${GREEN}[OK]${NC} Unit tests passed"
+    else
+        echo -e "${RED}[ERROR]${NC} Unit tests failed"
+        FAILED=1
+    fi
+fi
+
+# Final result
+echo ""
+echo "========================================"
+if [ $FAILED -eq 0 ]; then
+    echo -e "${GREEN}  All pre-commit checks passed!${NC}"
+    echo "========================================"
+    exit 0
+else
+    echo -e "${RED}  Pre-commit checks FAILED${NC}"
+    echo "========================================"
+    echo ""
+    echo "Fix the issues above before committing."
+    echo "To bypass (not recommended): git commit --no-verify"
+    exit 1
+fi

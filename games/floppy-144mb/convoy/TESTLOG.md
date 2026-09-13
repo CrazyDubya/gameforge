@@ -1,0 +1,3020 @@
+# Test log
+
+Every measurement taken against convoy, with the change that prompted it and
+the decision it led to. Append to this; do not rewrite history. A number with
+no record of what produced it is worth very little six weeks later.
+
+## How to reproduce any row
+
+```sh
+./build.sh                                     # both targets, hard size check
+
+# Win rate. This is the primary instrument.
+w=0; for s in $(seq 1 150); do
+  r=$(./build/convoy_headless -s $s -B -e 0 -o /tmp)
+  case "$r" in *WON*) w=$((w+1));; esac
+done; echo "$((w*100/150))%"
+
+# How runs end, which matters as much as how often they end well.
+for s in $(seq 1 50); do
+  ./build/convoy_headless -s $s -B -e 0 -o /tmp -v \
+  | grep -E "^ *[0-9]+ .*DEAD" | tail -1 | awk '{print $NF}'
+done | sort | uniq -c | sort -rn
+
+./tools/asan.sh                                # memory and UB check
+```
+
+`-B` runs the price-aware bot in `src/bot.c`. It plays through the real UI, so
+it measures the game rather than the simulation.
+
+## Reading these numbers
+
+- **Skilled** is the bot. It is the ceiling a thinking player approaches, not a
+  typical outcome.
+- **Careless** is a fixed key sequence that ignores prices. It should always be
+  0%: if it is not, the economy is optional.
+- **Target band** is 40-50% skilled. Below 30% the game reads as unfair; above
+  60% the decisions stop mattering.
+- **STALLED** means the bot made no progress for 4,000 steps. It is always a
+  bug, never a balance result.
+- A sweep that straddles a rebuild is **invalid** — each seed re-invokes the
+  binary, so half the sample measures the old build.
+
+---
+
+## Baseline: v1
+
+| config | skilled | careless | notes |
+|---|---:|---:|---|
+| 10 sectors, 30-slot hold | **53%** | 0% | shipped as v1, tagged |
+
+## Phase 0 — longer route, scrolling map
+
+| change | skilled | notes |
+|---|---:|---|
+| 14 sectors, resources unchanged | **0%** | bot deadlocked at sector 0 |
+| cr 170 / fuel 6 / water 10 / fuel-scale 3 | 13% | still starving |
+| settlements 34%→46%, cr 200 / f 7 / w 11 | 22% | resupply density matters more than starting stock |
+| ~~cr 260 / f 9 / w 13 / scale 2~~ | ~~63%~~ | **invalid** — sweep straddled a rebuild |
+| cr 150 / f 6 / w 9 / scale 4, **provisioning fix** | **44%** | careless 0%. Accepted. |
+
+**Finding.** Stocking fuel and water for the whole remaining route is 29 units
+against a 30-slot hold on a 13-hop journey. The hold filled with consumables,
+leaving no room to trade and no way to earn; the bot then pressed BUY at a full
+hold forever. **Hold size and route length are the same number.** Provisioning
+now plans 5 hops ahead.
+
+## Phase 1a — archetypes and price context
+
+| change | skilled | notes |
+|---|---:|---|
+| archetypes + price context, bot unchanged | 34% | bot had no concept of either |
+| + bot archetype awareness, **+ bid-ask spread** | 26% | spread cut trading income 20% |
+| + fuel base 20→17, scale 4→2, buy bump 10%→6% | **46%** | accepted |
+
+Death causes at 46%: **22 STRANDED / 7 THIRST / 1 STRIPPED**. Monotone — fuel
+was effectively the only failure mode.
+
+**Finding.** Market memory had an infinite money loop that shipped in v1.
+Buying nudged a price up ~10% and you could sell into your own nudge: buy 20,
+price becomes 22, sell for 22, repeat. The bot found it accidentally and
+reported 4,141 credits at sector 0 on day 1. Fixed with a 20% bid-ask spread.
+**Any economy where the player's trades move prices needs this check.**
+
+## Phase 1b — contracts
+
+| change | skilled | notes |
+|---|---:|---|
+| contracts, reward 3.4× cargo value | 54% | 408 credits vs 150 starting capital |
+| reward ~2×, work at 45% of stalls | **50%** | accepted |
+
+## Phase 2 — upgrades and crew
+
+| change | skilled | notes |
+|---|---:|---|
+| upgrades + crew, kit priced 220-300 | **48%** | see finding — nothing was ever bought |
+| kit repriced 130-175, crew 85-120 | **39%** | kit now bought (8 buys / 30 runs) and win rate *fell 9 points* |
+| upgrade effects fixed, repriced 120-150 | **40%** | still below the 48% the bot got by ignoring the garage |
+| payback-aware purchasing | ~~35%~~ | **invalid** — edit never reached bot.c |
+| ~~surplus-only buying~~ | ~~30%~~ | **invalid** — same, identical results gave it away |
+| payback + surplus, *verified in source* | *pending* | grep before build, not after |
+
+Death causes at 48%: **16 STRANDED / 7 THIRST / 1 STRIPPED**. Thirst rose from
+13% to 29% of deaths once crew started drinking — the intended effect.
+
+**Finding: two upgrades were no-ops.** Water tanks halved the daily water burn
+rounded up, so with no crew aboard a burn of 1 became a burn of 1 -- no effect
+whatsoever, in exactly the situation a player is most likely to buy them. The
+scout was sold as "see two sectors ahead" when the entire route is already drawn
+on the map: a purchasable nothing. Both now do something concrete (a dry day
+every third day; storms cost nothing).
+
+Neither showed up as a crash, a stall or a bad win rate. They were found by
+working out by hand what each upgrade was worth in credits and noticing two of
+them were worth zero. **Write the payback arithmetic down; do not assume an
+effect exists because you wrote the code for it.**
+
+**Finding.** Kit at 220-300 credits was unaffordable: a winning run banks under
+100. Across five complete bot runs, **not one purchase was ever made**. Content
+that exists and cannot be reached is worse than content that does not exist,
+and only an agent that plays every run to completion will tell you.
+
+### RESOLVED in phase 2A: kit is now a genuine choice
+
+| price (% of remaining payback) | skilled win | n |
+|---:|---:|---:|
+| 75% | 44% | 150 |
+| 60% | 39% | 150 |
+| 35% | 59% | 150 |
+| **45%** | **51%** | **250** |
+
+Parity is 45%: buying wins 51%, ignoring the garage won 49%. Both are
+defensible, which is the definition of a decision. Kit is bought in 39 of 40
+runs versus 2 of 30 before.
+
+Two notes on reading this. The 75/60/35 rows were 150-seed samples where the
+standard error is about +/-4 points, so 44% and 39% are the same number and
+only the 35% row was a real signal -- the sequence looks non-monotonic but is
+not. The final figure was re-measured at n=250 for that reason.
+
+Salvaged kit is priced at 67% of sound, which is exactly its reliability
+(it fails about one run in three). That makes the two options equal in
+expectation and different only in variance -- a real gamble. Priced any lower,
+as it was at 45%, salvaged is strictly better and there is no choice to make.
+
+### ORIGINAL PROBLEM: kit lost to working capital
+
+With payback-aware, surplus-only purchasing the bot buys kit **twice in thirty
+runs**. It is not being stupid: credits in the hold compound. Buy low, sell
+high, repeat over six legs and 100 credits becomes ~300. No fitting returns
+that, so the "decision" is not a decision -- it is a dominated option that the
+game politely offers.
+
+The target is a toss-up, or failing that a gamble worth taking. Three angles,
+in rough order of how well they fit what is already here:
+
+**1. Price kit against the back half, not the front.** Kit currently gets
+*dearer* by sector (`world_upg_price` scales +5%/sector) while its value goes
+*up* late, because there are fewer legs left for capital to compound through
+and because market memory has already burned the easy routes. That escalation
+is backwards. Removing or inverting it makes kit the natural thing to do with
+late-run money.
+
+**2. Value it in survival, not credits.** The payback model prices fuel saved
+at a flat 22 credits. But fuel saved *when the tank is empty* is worth the
+entire rest of the run, and fuel saved when rich is worth 22. Roughly half of
+all runs end in death; kit that removes a specific death -- econ against
+stranded, tanks against thirst, armour against stripped -- is worth far more
+than its expected credit value. Pricing it by expectation systematically
+undervalues it.
+
+**3. Make it an actual gamble.** Cheap kit with a failure chance, or kit paid
+for in cargo rather than credits, turns a dominated option into a bet. A bet
+that is occasionally wrong is more interesting than a purchase that is reliably
+mediocre.
+
+Angle 1 is a two-line change and should be tried first. Angle 2 needs the
+payback model rewritten in terms of probability of ruin, which is the more
+correct model and a bigger job.
+
+### OPEN: every crew member is net-negative
+
+Worked out in credits at 13 hops remaining, before their keep is deducted:
+
+| crew | saves | keep (water) | net |
+|---|---:|---:|---:|
+| mechanic | 90 | 169 | **-79** |
+| guard | 150 | 169 | **-19** |
+| medic | 80 | 169 | **-89** |
+| scout | 105 | 169 | **-64** |
+| trader | 117 | 169 | **-52** |
+
+There is no correct hire, only a less-wrong one. The cause is structural rather
+than a price being off: each crew member helps with exactly **one** encounter
+type, and encounters are only ~30% of nodes, so any given hire pays out once or
+twice a run while drinking every single day.
+
+Deliberately **not** fixed by inventing numbers here. Phase 3 takes encounters
+from 5 kinds to ~14 and makes their outcomes depend on crew, which changes this
+arithmetic materially. Re-derive the table above after Phase 3 and price crew
+against the result.
+
+The general rule this is an instance of: **an ability that triggers on a rare
+event cannot pay for a cost that recurs every day.** Either broaden what it
+applies to, or charge for it per use rather than per day.
+
+## Phase 3 — fourteen encounter kinds
+
+| change | skilled | notes |
+|---|---:|---|
+| 5 kinds -> 14, generic bot evaluation | **53%** | n=200, 0 crashes, 0 stalls |
+
+Death causes: **17 STRANDED / 11 THIRST**, i.e. 61/39. The monotone 87/13 the
+game started with is gone; runs now end in more than one way.
+
+**The bot no longer knows what an encounter is.** It reads pay/gain/lose and
+their quantities, values them against what the convoy currently needs, and
+takes the better side. All fourteen kinds resolve through one function, so a
+fifteenth needs no bot change -- which matters, because a mechanic the bot
+cannot judge is a mechanic nobody can measure.
+
+One deliberate distortion in that valuation: fuel and water are worth **3x**
+their price when stock is below the reserve. A flat price model will happily
+trade away the thing that is about to kill you.
+
+### Correction: more encounter kinds did NOT rescue crew
+
+Phase 2 logged the expectation that tripling encounter variety would make
+specialist crew worth hiring. **That was wrong, and backwards.** Encounters are
+still ~30% of nodes, so spreading them across 14 kinds instead of 5 means any
+one kind fires *less* often, not more. Each crew member covers about two kinds
+-- roughly 0.6 triggers per run against a keep of ~169 credits of water.
+
+Crew are still net-negative. The fix has to be broader coverage or a lower
+keep, not more content. Carried into phase 4.
+
+## Phase 4 — crew economics, final balance
+
+| change | skilled | engagement |
+|---|---:|---|
+| crew broadened + alternate-day rations | 53% | crew still never hired |
+| crew priced off payback, as kit already was | **42%** | 201 fittings, 47 crew / 200 runs |
+
+Final: **42% skilled, 0 crashes, 0 stalls, sanitizers clean, n=200.**
+Deaths **19 stranded / 15 thirst** — a 56/44 split against the 87/13 monotone
+this work started from.
+
+### What actually fixed crew
+
+Two changes, and the second was the one that mattered.
+
+Broadening coverage (each hand now handles a category of trouble -- raids,
+tolls and checkpoints for a guard -- rather than one encounter kind) and
+halving their keep to alternate-day rations took every crew member from
+net-negative to net-positive on paper: the table that read -79 to -19 now reads
++72 to +231.
+
+The bot still never hired one. Crew were priced off a flat base while kit was
+priced off payback, so they were unaffordable exactly when they were worth
+having -- the identical trap kit had already been pulled out of in phase 2A.
+Pricing them the same way fixed it in one change.
+
+**A fix that works on paper and changes nothing in play means the constraint is
+somewhere else.** Look at what the agent can afford, not only at what the thing
+is worth.
+
+### The instrumentation that should have existed from the start
+
+The harness now reports what a run ended up owning:
+
+    BOT seed=16 WON sector=13 day=14 credits=18 cargo=6 upg=2 crew=1 steps=134
+
+Two extra integers. Four separate problems this session -- unaffordable kit,
+two no-op upgrades, unaffordable crew, and kit that lost runs when bought --
+all hid behind clean sweeps and a healthy win rate. An option nobody takes and
+an option that loses are indistinguishable in an outcome metric.
+
+# v3
+
+## Phase A — the payload, cut scenes, endings
+
+| change | skilled | endings reached |
+|---|---:|---|
+| payload + cut scenes, seed only lost when hold is empty | 40% | DEAD 119, INTACT 81 |
+| seed targeted by anyone who searches the hold | 40% | + PARTIAL 1, EXEMPLARY 9 |
+| storms spoil seed (unavoidable attrition) | **41%** | DEAD 118, PARTIAL 5, INTACT 68, EXEMPLARY 9 |
+
+n=200, 0 crashes, 0 stalls, sanitizers clean.
+
+**Finding: a threat you can pay off is not a threat.** The first attempt let
+raiders take the seed only once the tradeable hold was empty, then let them
+target it directly. Neither moved the numbers, because the bot values the seed
+at 90 credits a slot and simply *pays* every time -- which is correct play.
+Seed loss only ever happened when the convoy could not afford the price.
+
+Two of five endings stayed unreachable until storms were given a 35% chance to
+spoil a crate. That threat cannot be paid off, argued with or fought, and it is
+the only reason attrition exists at all.
+
+The general shape: **if every risk to a thing is purchasable, a competent player
+never loses it.** Something has to erode it unconditionally or the failure
+states are decoration.
+
+### OPEN: the EMPTY ending is still unreached
+
+Arriving with none of the seed has not occurred in 200 bot runs. It requires
+losing all six crates, and an optimal convoy avoids storms and pays off raids.
+It is reachable in principle -- a careless human will find it -- but by the
+standard applied to unaffordable kit and no-op upgrades, unverified content is
+unverified. Either force reachability in phase F or cut the ending.
+
+**RESOLVED in phase F.** It was not reachable in principle either: the
+arithmetic came to 0.29 crates lost per run against six needed. Payload demands
+now escalate with depth, and the ending is demonstrated with a refuse-every-
+encounter probe. See the phase F section below.
+
+## Phase B — the audio engine
+
+| metric | before | after |
+|---|---:|---:|
+| engine | one fixed 16-step pattern, 3 voices | 4-channel sequencer, 6 instruments, 6 songs |
+| lines | 117 | 268 |
+| peak | -2.1 dBFS | -3.1 dBFS |
+| DC offset | -13 | **-6** |
+| clipped samples | 0 | 0 |
+
+Win rate 39% (n=150), unchanged within noise: audio is presentation only.
+
+**Finding: a duty-cycle square has a DC offset.** The first render measured a
+-1290 DC and 298 clipped samples. A plain +/- full-scale square at 37% duty
+spends more time low than high, so its mean sits at -8520 -- audible as a thump
+on every note, and it eats the headroom the music needs. Scaling each half by
+the other's share puts the mean at zero for any duty:
+
+    hi = 32767 - duty * 128;   lo = -duty * 128;
+
+**Debugging note.** Two moods reported byte-identical audio and the first
+suspicion was another silent edit failure. It was not: the test scripts never
+dismissed the three-panel opening cut scene, and while a cut scene owns the
+screen `game_update` returns before it reaches the music. A packed probe --
+`cut*1000 + title*100 + mood*10 + mood_next` -- gave the answer in one run
+where single-value prints had failed three times. When a guess has been wrong
+twice, return the whole state path as one number.
+
+## Phase C — day/night, weather, transitions
+
+Presentation only; win rate unchanged within noise.
+
+**Finding: a physically correct night was the wrong night.** The first pass
+took the palette to cold blue-grey after dusk and blended the land 150/255
+toward the sky. Every panel, icon and goods colour in the game is warm, so the
+backdrop fought all of them and dark sectors read as muddy rather than
+atmospheric. The fix was to keep night inside the game's own range -- a dusty,
+lamp-lit night -- and to cut the land tint to 70/255 so the desert keeps its
+own colour. Night now also has mechanical weight: dark settlements put fewer
+offers on the board, so it is a condition rather than a filter.
+
+**Finding: a full-screen transition is a large share of what a player sees.**
+A dithered wipe fired on every state change. It looked good in motion and
+awful in a still, and because it covered the whole frame it turned up in two
+screenshots taken at random and made the game look broken. It was cut to a
+brief scrim dip, and then measured: at its first setting the dip peaked at 62%
+ink over 8 frames.
+
+    trans = 8, level = trans > 4 ? (8 - trans) * 2 + 4 : trans * 2   -> peak 10/16
+
+The bot spends exactly one frame per step, and an encounter lasts about three
+steps, so the transition outlived the screen it was introducing -- the harness
+could not photograph a clean encounter at all. Cut to 4 frames with level =
+trans (peak 4/16, ~66ms). **If a screenshot keeps catching an effect by
+accident, that is a measurement of how much of the game the effect is.**
+
+---
+
+## Phase D — characters, dialogue and journal
+
+Five recurring characters (`met[]`, `regard[]` in `World`), portraits generated
+from a seed, dialogue that differs on first meeting / warm return / cold
+return, and a PEOPLE tab recording who was met, how often, and where you stand.
+
+| metric | phase C | phase D |
+|---|---:|---:|
+| size | 106,496 B (7.22%) | 107,008 B (**7.26%**) |
+| win rate (n=200) | 42% | **36%** |
+| stalls / crashes | 0 | **0** |
+| encounters per run | 1.76 | **2.75** |
+| runs meeting nobody | 43 / 200 | **7 / 200** |
+| runs meeting 3+ | 19 / 200 | **53 / 200** |
+
+New harness counters: `met=`, `regard=`, `enc=`.
+
+**Finding: the story was competing with the profitable route, and losing.**
+The generator makes 30% of nodes encounter nodes, which should give ~3.6 per
+run. Measured: **1.76**, and 43 of 200 runs -- including 19 of 84 *winning*
+runs -- met nobody at all. The cause was structural, not statistical: money is
+made in settlements, so the route that pays is the route that skips the story.
+Every portrait, dialogue line and journal entry was content a good player was
+paid to avoid.
+
+The fix was to stop making the two compete. A settlement arrival now has a 14%
+chance of also carrying an encounter, returning to the market afterwards
+(`after_event`). Meeting people where the people are costs nothing to opt into.
+
+**Finding: adding encounters costs win rate, which means encounters are a tax.**
+Raising encounter frequency dropped the win rate 42% -> 30%. A genuinely
+even-money encounter table would have added *variance* without moving the mean.
+That it moved the mean by twelve points says the fourteen kinds are net
+negative EV against a competent player. Two partial fixes were applied --
+market meetings re-roll once if they come up a threat (raids happen on the
+road, deals happen in town), worth +3 points, and the rate was cut from 20% to
+14%, worth another +3 -- landing at 36%. **The underlying EV imbalance is left
+for phase F**, which is the rebalance phase; it should be fixed in the payoff
+tables, not by hiding the content.
+
+**Bug: the journal could never be opened.** `cycle_tab` skipped any tab whose
+`ui_tab_rows` was zero, and the journal deliberately returns zero because it is
+a record rather than a menu. It was therefore skipped on every press. The tab
+strip already had the right predicate (`tab_live`); the fix was to export it as
+`ui_tab_live` and have both ask the same question. Found by reading the code,
+not by any sweep -- **no bot test would ever have caught it, because the bot
+never opens the journal.** The screenshot flag added for it (`-J`) drives real
+tab presses rather than reaching into `GameState`, so the shot proves the tab
+is reachable.
+
+**Bug: three of the five faces were near-identical.** `draw_portrait` reads
+skin, cloth, hat, beard and scar from separate bit fields of one seed, and
+nothing forces those to differ between characters. Evenly spaced seeds
+(`who * 977 + 13`) collided; replacing them with a hash collided differently.
+Both attempts were *hoping* rather than checking. Fixed by searching for five
+seeds that yield deliberately chosen combinations and hard-coding them. **With
+five of something and 1.3MB spare, pick them; do not roll for them.**
+
+**Repeat offence: a scripted `.replace()` silently did nothing.** A header
+declaration failed to land because the file had `int  world_event_char` with
+two spaces and the pattern had one. This is the same failure already recorded
+under phase 2, and it cost a build cycle -- during which `asan.sh` reported
+"sanitizers clean" against a stale binary. **A green result from a build that
+failed is worse than a red one.** Use `Edit`, and grep for the new text before
+believing any number that follows.
+
+**Still open.** `crew=0` in 159 of 200 runs: the crew board is bought from far
+less often than the garage (`upg>=1` in 148 of 200). Combined with the
+encounter-EV finding above, phase F has two known balance targets rather than
+one.
+
+---
+
+## Phase E — difficulty modes and the daily seed
+
+Three settings chosen at the title, plus a daily run: one map a day, the same
+one for everybody, with a score to compare.
+
+| difficulty | skilled win (n=200) | careless (n=40) | stalls |
+|---|---:|---:|---:|
+| FORGIVING | **64%** | 0% | 0 |
+| THE ROAD  | **46%** | 0% | 0 |
+| UNFORGIVING | **25%** | 0% | 0 |
+
+Target bands were ~60 / 40-45 / ~25. All three land inside or within one
+standard error (n=200 gives about +/-3.5 points).
+
+**Difficulty leans on a different death, not on a bigger number.** The design
+claim was that the modes should fail *differently*. Measured, over 120 seeds
+each:
+
+| difficulty | THIRST | STRANDED |
+|---|---:|---:|
+| FORGIVING | 23 (61%) | 15 |
+| THE ROAD | 32 (54%) | 27 |
+| UNFORGIVING | 34 | **54 (61%)** |
+
+Easy and normal are thirst-led; hard inverts to stranded-led, because the
+settlement density drop and the steeper fuel curve bite before the water does.
+The claim holds and is now a measurement rather than an intention.
+
+The table is six numbers per row -- starting credits, water, fuel, the fuel
+price curve, storm spoilage and settlement density -- and settlement density is
+by far the strongest lever. It is resupply: 52/48/44 percent moves the win rate
+more than every other field combined.
+
+**Bug: the opening cut scene played before the title, and then again.**
+`game_init` calls `restart()` to build a world for the title screen to sit in
+front of, and `restart()` begins the opening. So the opening ran first, the
+title appeared after it, and pressing start replayed the whole thing. It had
+been there since phase A and nobody noticed because nobody had played by hand
+and the bot presses through everything. It surfaced only when the new title
+menu stopped responding -- the cut scene was eating the keys. **A modal screen
+that swallows input hides itself; the symptom shows up in whatever was supposed
+to receive that input.**
+
+**Bug: paying for goods there was no room for.** `world_can_accept` checked
+whether the player could afford an encounter but not whether the hold could
+take what was offered, and `world_accept` clamped the gain to the space
+available. With a full hold the player paid the price in full and received
+nothing, while the panel advertised the goods. Worth only about one point of
+win rate -- the bot rarely runs full -- but it is the one thing an encounter
+must never do, since the whole system asks the player to take the offer at its
+word.
+
+## Phase F — rebalance, and closing the last open item
+
+**RESOLVED: the empty-handed ending, open since phase A.** `OUT_EMPTY` had
+never occurred in 200 runs, then 800, across every difficulty. The standing
+decision was "force reachability or cut it".
+
+Cutting it was nearly the right answer, because the arithmetic said it was
+decoration. Raiders, tolls and checkpoints past sector 4 demanded the seed with
+a flat 45% chance for 1-2 crates. Encounters average 2.75 per run; roughly two
+fall past sector 4; three of the fourteen kinds search the hold. That is
+2 x (3/14) x 0.45 = **0.19 demands per run**, at 1.5 crates each: **0.29 crates
+lost per run against six needed.** No sample size would ever have reached it.
+
+Instead both the chance and the price now climb with depth -- `45 + depth * 3`
+percent, for `1..2 + depth/5` crates. Late raiders know exactly what is in the
+crates. Verified with a new probe (`-R`) that refuses every encounter, which is
+the only player who can lose the seed at all:
+
+| difficulty | EMPTY (refusing, n=200) | EMPTY (paying, n=200) |
+|---|---:|---:|
+| FORGIVING | 3 | 0 |
+| THE ROAD | 4 | 0 |
+| UNFORGIVING | 2 | 0 |
+
+All five endings are now reachable and demonstrated. Skilled win rates were
+unchanged by the change (64/46/25 before and after), because a player who pays
+raiders never loses a crate to them -- which is exactly the intended shape: the
+ending belongs to the player who refuses, and the cost is real.
+
+**A probe is not a strategy.** `-R` exists to prove content is reachable, not
+to play well; it wins less often than the ordinary bot. Keeping the two
+separate is what stops "reachable" and "sensible" being confused.
+
+**Teaching arc, re-verified now that a cut scene and a title menu exist.**
+The opening is 301 characters at 2 ticks each: **10 seconds** if never skipped,
+and any key advances it. Title -> opening -> first market is immediate (the
+starting node is a settlement), and the first encounter arrives at bot step 31.
+Well inside five minutes with room to spare.
+
+**Win-screen wash.** Arrival tinted the whole frame green at a quarter
+coverage, which swallowed the sky, the sand and the convoy -- the same mistake
+as the cold night in phase C, in the opposite colour. Cut to an eighth.
+
+---
+
+# v4 — the refinement cycle
+
+**Everything above this line is void as a current measurement.** It stays as a
+record of what was tried and what was learned, but no number from v1 to v3 can
+be compared with anything below it, for three independent reasons:
+
+1. The generator was one RNG stream. Map layout, market offers, contracts,
+   encounters and salvage failure all drew from it, so editing any table
+   reshuffled every later roll and a seed stopped being the same run. Paired
+   before/after comparison was never valid. Split in P1 into `rng_map`,
+   `rng_offer` and `rng_event`.
+2. The bot sampled prices once per *keypress* rather than once per arrival, so
+   its running average was weighted by how long it stood in each shop — and
+   the weighting was a function of how much it traded. Fixed in P3.
+3. The bot's hire test was `crew_payback(...) > price` where `price` is defined
+   as `payback * 45 / 100`. That is `p > 0.45p` — true for any positive
+   payback. There was no economic filter on crew at all. Fixed in P3.
+
+The v3 headline of 64% / 46% / 25% is not recoverable and is not a target to
+return to.
+
+## P0 — make the build able to fail
+
+CI built every game with `ONLY_WIN=1`, which skips the harness. **`src/bot.c`
+and `src/platform_headless.c` were never compiled by CI at any point in three
+releases.** The entire measurement layer could have been deleted and every run
+would still have gone green. A Linux job now builds them, runs the sanitizers,
+and plays 20 seeds on each difficulty, failing on a stall or on a difficulty
+that never wins.
+
+`-Werror` added. Warnings had been on since the first commit and accumulated
+anyway: an unused duplicate of `world_upg_payback` in `bot.c`, two dead price
+tables (`UPG_BASE`, `CREW_BASE`) that nothing had read since pricing became a
+function of payback — **and that two separate audits mistook for live data** —
+a dead audio pattern, a misleading indentation, and an enum-compare in an array
+bound.
+
+The gate was verified by introducing a warning and confirming the build failed.
+A gate that has never been seen to fire is not known to work.
+
+`tools/sync.sh` added. The development tree and the shipped tree are separate
+copies with no link; the only thing keeping them in step was remembering to
+copy by hand, and nothing would have reported a drift, because every sweep runs
+against the tree that does not ship.
+
+Exit check: **BOT lines for seeds 1..50 byte-identical before and after.**
+
+## P1 — the harness becomes an instrument
+
+No game rules changed. Everything here is measurement.
+
+### The RNG split, and the proof it works
+
+The invariant to establish was: *editing an encounter table must leave every
+map exactly where it was.* Tested by inserting one extra `rng_range` draw into
+the `EV_RAID` case, rebuilding, and comparing map hashes across 100 seeds on
+each difficulty:
+
+| difficulty | maps after an encounter-table edit |
+|---|---|
+| FORGIVING | unchanged |
+| THE ROAD | unchanged |
+| UNFORGIVING | unchanged |
+
+while the win rate moved (75 → 74 of 200), which is the encounter stream doing
+its job. Before the split, the same edit would have moved every map.
+
+**The first attempt at this test proved nothing.** The scripted insert missed
+its anchor, the assertion fired, and the comparison ran against an unmodified
+binary — reporting "maps unchanged" for a probe that was never there. This is
+the same silent-edit failure already recorded twice in this log. The rule holds
+and needs restating: *grep for the probe before believing the result of the
+probe.*
+
+### New harness capabilities
+
+| flag | question it answers |
+|---|---|
+| `-N n` | run seeds 1..n **in one process** |
+| `-A ref\|v4` | play with the frozen v4-entry agent, or the working one |
+| `-Z` | replay every seed and compare a step-by-step state hash |
+| `-X` | is there a profitable buy-then-sell round trip anywhere? |
+| `--daily` | drive the daily map through the title menu |
+
+`-N` removes a whole class of invalid result structurally: every sweep in this
+log until now was a shell loop re-invoking the binary per seed, which is
+exactly how a sweep straddles a rebuild and reports half of one build and half
+of another. A sweep is now one process and cannot.
+
+Acceptance test for `-N`: 50 seeds in-process must be **byte-identical** to 50
+shell-loop invocations. They are. `game_init` assigns fields individually and
+never clears `GameState`, so the arena is zeroed per seed — without that the
+transition timer, cut-scene state and audio phase carry over.
+
+`-Z` clean on 100 seeds × 3 difficulties. `-X` clean: the best round trip nets
+**+0** at a list price of 1, where the sell clamp floors the take — you end
+with the same credits and the same goods and the buy nudges the price up, so
+nothing is farmed. Strictly positive is the failure condition.
+
+**Bug found while adding `--daily`: the map hash was being taken from the wrong
+world.** `game_init` builds a world for the title screen to sit in front of,
+and pressing start builds the real one. Hashing on the first step captured the
+title's placeholder. For an ordinary run the two are generated from the same
+seed and are identical, so it looked correct — but every `-D 0` and `-D 2` hash
+was reporting the *normal-difficulty* map, and a daily run reported the
+non-daily one. Found only because the daily map came back identical to the
+standard map when it had no reason to.
+
+### Engagement counters — first readings (n=150, THE ROAD)
+
+Compiled into the harness only, via `-DCONVOY_INSTRUMENT`. The Windows binary
+is **byte-identical md5 with and without them**: the contest target does not
+carry its own test rig.
+
+| measurement | reading |
+|---|---:|
+| encounters per run | 2.76 |
+| accepted | 0.85 |
+| **forced declines** | **0.57** |
+| contracts offered | 1.48 |
+| contracts accepted | 1.47 |
+| **contracts delivered** | **0.63** |
+| crates lost — storm / demand / random | 0.08 / 0.15 / 0.00 |
+| realised ÷ headline on sales | **78.7%** |
+| biggest stack sold at one market | 2.6 units |
+| hold occupancy — mean / peak | **69% / 94%** |
+| min water / min fuel reached | 1.3 / 1.2 |
+| deaths — thirst / stranded | 48 / 44 |
+
+### Epoch zero — the baseline every later phase is measured against
+
+n=400 per difficulty, in one process, both agents. The reference agent is a
+byte-for-byte copy of the working bot today, so identical columns are the
+expected result and a divergence would mean the copy was not faithful.
+
+| difficulty | frozen `-A ref` | working `-A v4` | stalls |
+|---|---:|---:|---:|
+| FORGIVING | 68% (275/400) | 68% (275/400) | 0 |
+| THE ROAD | 41% (167/400) | 41% (167/400) | 0 |
+| UNFORGIVING | 25% (102/400) | 25% (102/400) | 0 |
+
+At n=400 the standard error is 2.5 points, so differences below ~5 points
+between independent sweeps are not differences. Paired comparison on the same
+seed set resolves considerably finer, and is the default from here.
+
+These are **not** comparable to v3's 64/46/25: the generator was re-seeded into
+three streams, so every seed is a different run. The game was not made harder.
+
+### Three findings that revise the plan
+
+**Forced declines are 30% of all refusals.** Of 1.91 declines per run, 0.57 are
+the game refusing on the player's behalf because the price could not be paid.
+Every previous statement about players "choosing" to refuse an encounter was
+measuring a mix of choice and inability, with no way to tell them apart. This
+is the counter that had to exist before P7 can tune anything.
+
+**Sales realise 78.7% of headline, not 41%.** The 41% figure was arithmetic for
+a 10-unit stack. Measured, the largest stack sold at any one market is **2.6
+units** — the decay barely engages, because nobody sells ten of anything. The
+asymmetry between buy impact (`p/16 + 1`) and sell impact (`p/8 + 1`) is still
+real and still wrong, but **its measured cost is a fifth of what the arithmetic
+implied.** P4 stands, with its justification corrected: it is a fairness fix and
+a guard against future stack-selling, not a recovery of 60% of the economy.
+
+**The hold runs at 69% mean and 94% peak occupancy, not 30-45%.** The earlier
+figure was *final* cargo, read at the end of a run after selling down — not
+occupancy during it. `UPG_HOLD` is therefore not untested content, and P5's
+premise that the bot never feels hold pressure is wrong. The pressure is
+already there; what is missing is the bot *valuing* the space.
+
+All three came from counters, none from a win rate, and all three corrected a
+conclusion that had been reached by arithmetic alone. That is the argument for
+this phase.
+
+
+## P2 — correctness bugs with no design content
+
+Seven fixes, all cases where the current behaviour was impossible to defend
+rather than merely unbalanced. Measured against the frozen `-A ref` control,
+which is why this phase comes before any work on the bot: it needs no competent
+agent to show that a run ended for a reason the rules do not support.
+
+| difficulty | P1 epoch zero | P2 exit | change |
+|---|---:|---:|---:|
+| FORGIVING | 68% | **72%** | +4 |
+| THE ROAD | 41% | **46%** | +5 |
+| UNFORGIVING | 25% | **27%** | +2 |
+
+n=400 each, zero stalls, `ref` and `v4` identical (the bot is untouched in this
+phase). The win rate rose because three of these bugs killed runs the rules say
+should have continued. **Recorded, not tuned back** — the balance phases come
+later and will be measured from here.
+
+### The fixes
+
+**Armour was overwritten by the thing it protects against.** The clamp on what
+refusing costs was applied inside each of the three raid-family cases, and the
+payload demand at the end of `roll_event` then overwrote `lose_good` and
+`lose_qty` wholesale. So the one fitting sold as protection gave exactly none
+from sector 4 onward — the half of the run a player buys it for. Armour and the
+bad-standing surcharge now both apply *after* the demand, and armour covers
+crates as well as cargo: one crate back is worth more than a full hold.
+
+Measured with a forced-policy A/B — same seeds, armour fitted or not,
+refuse-every-encounter on UNFORGIVING so that demands always bite, n=300:
+
+| | crates lost to demands |
+|---|---:|
+| armour off | 177 |
+| armour on | **151** |
+
+A 15% reduction, against **107 versus 107** — bit-for-bit identical — before
+the fix. Note this is deliberately not a win-rate measurement: armour protects
+the *ending*, and a crate is 500 score against a win's 1000, so its value never
+had to show up in a won/lost column and did not.
+
+**Standing was asymmetric and then discarded.** A discount required
+`pay_qty > 1` and a gain bonus required `regard > 1`, while both penalties
+required only `regard < 0`. Half the encounter table has `pay_qty` of exactly
+1, so on those kinds good standing bought nothing at all while bad standing
+always cost. And the surcharge was applied *before* the payload override that
+discards it — on precisely the three kinds the raider chief appears in, which
+are the only ones his standing affects. Gates are symmetric now, and goodwill
+can take a price to zero, the same shape as having the right crew aboard.
+
+**The economiser killed runs.** `UPG_ECON` makes every second hop cost no fuel,
+but `world_can_travel` demanded a unit in the hold regardless, and the failure
+path declared `DEATH_STRANDED`. A convoy with the economiser fitted, no fuel,
+on a free day, was killed for a hop that would have cost nothing — on the one
+fitting sold as insurance against exactly that. Both now ask
+`world_hop_costs_fuel()`.
+
+**Accepting could kill you.** `end_event` ended the run with `DEATH_STRIPPED`
+whenever the hold reached zero, including on the accept path. Several kinds pay
+in credits and cost goods, so taking the money for your last unit of cargo
+ended the run on the screen that had just shown a gain. Only a refusal can
+strip you now.
+
+**Contracts jammed permanently, and some were undeliverable.** `contract_tick`
+early-returns while a job is on the board and nothing ever cleared it, so one
+ignored offer disabled the contract system for the rest of the run. Offers now
+lapse when the convoy leaves. Separately, `by_sector` could be `SECTORS-1` —
+the Green Zone, which has no market, so `contract_tick` never runs there and
+the job could not be paid out at all. Clamped to `SECTORS-2`.
+
+Measured, normal difficulty, n=200:
+
+| | P1 | P2 |
+|---|---:|---:|
+| contracts offered per run | 1.48 | **1.89** |
+| accepted | 1.47 | 1.31 |
+| delivered | 0.63 | 0.56 |
+
+Offers up 28%, which is the expiry working. **Acceptances went down**, which is
+the finding: there are now more jobs than the bot can carry, because
+`contract_worth_taking` refuses anything that would leave under four free
+slots. Previously the board was jammed early and the question never arose. The
+delivery rate is unchanged at 43% of accepted. Both belong to P6.
+
+**Vignettes replayed for the rest of the run.** The caller tracked which
+*sector* had shown a beat, but two of the five are conditions rather than
+places: the seed being gone stays true, and storms recur. So the loss beat
+fired again at every remaining settlement — and because it is tested first, it
+suppressed the halfway and last-hop beats entirely. A convoy that lost its
+cargo saw the same three lines four times and nothing else again. Keyed by kind
+now.
+
+The loss beat was also guarded by `payload_lost_to != 0xFE`, and **`0xFE` is
+never assigned anywhere in the program**, so that test was always true.
+
+**`payload_lost_to` deleted.** Documented as "what took the last of it, for the
+ending", it was written on one of the three paths that can take a crate, stored
+a `WorldState` rather than a cause, and had exactly one reader — the dead
+sentinel above. With that gone it had none. The harness counts crate losses by
+cause properly.
+
+**Arriving through a vignette skipped the arrival.** The vignette branch
+returned before the tab reset and the travel sound, so a beat left the cursor
+on whatever tab was last used and made no noise — the two signals that say you
+have arrived somewhere. It falls through now.
+
+### Process
+
+Three mistakes worth recording, all caught rather than shipped.
+
+**I edited the frozen reference agent.** A one-line contract bound was applied
+to `bot.c` and `bot_ref.c` together by a careless `sed` over both files. The
+reference agent exists precisely so that it does not change; reverted. The
+change was harmless in this instance, which is exactly why the rule has to be
+mechanical rather than judged case by case.
+
+**I rebuilt while a sweep was running.** The sweep re-invokes the binary per
+difficulty, so it would have reported some difficulties from one build and some
+from another. The reasoning that the change was inert was almost certainly
+correct and was discarded anyway: sweeps now finish with an `md5sum -c` on the
+harness, so a straddled sweep reports itself instead of relying on memory.
+
+**A forced-policy flag that did nothing.** `-U n` fits an upgrade regardless of
+what the bot chooses, so armour can be measured with and without on the same
+seeds. The first A/B returned **107 crates against 107** — identical. The flag
+was setting the upgrade on the world `game_init` builds for the title screen to
+sit in front of, and pressing start builds the real world from scratch, zeroing
+it. This is the same shape as the map-hash bug found in P1, from the same
+cause, three days apart. **Anything the harness pokes into the world has to be
+poked after the title, not before.**
+
+
+## P3 — the bot stops lying
+
+Game frozen; `bot.c` only. This is the first trustworthy baseline of the
+release, and it is nothing like the numbers that preceded it.
+
+| difficulty | frozen `ref` | honest `v4` | change |
+|---|---:|---:|---:|
+| FORGIVING | 72% | **92%** | +20 |
+| THE ROAD | 46% | **67%** | +21 |
+| UNFORGIVING | 27% | **38%** | +11 |
+
+n=400 each, zero stalls. `ref` is byte-identical to its P2 figures, which is
+the proof that the game did not move: **every point of that gain is the
+observer, not the observed.**
+
+### The game was never as hard as three releases of this log reported
+
+The difficulty numbers were measuring the instrument's handicap. Two faults did
+most of it:
+
+**The water reserve sampled one day's parity and multiplied it out.** The daily
+burn alternates — crew drink on odd days, water tanks give a dry day on even
+ones — so `span * world_water_burn(w)` swung between two very different
+answers depending on which day the convoy happened to arrive at a market. With
+tanks fitted on an even day the burn reads 0 and the whole reserve collapsed to
+2 units. The bot then sold water down to that and died of thirst a day later.
+It now sums `world_water_burn_on` over the days ahead.
+
+**The price average was weighted by loitering.** `observe()` ran on every step,
+i.e. every keypress, so a market was counted five to twenty times depending on
+how long the bot stood in it — and because `world_buy` and `world_sell` move
+the local price permanently, what accumulated was the *moved* price, over and
+over. The error was therefore a function of how much the bot traded, which is
+precisely what the average is used to decide.
+
+`world.h` carried a comment for three releases saying the bot "keeps the same
+running average for itself, so both reason from identical information". It was
+not true. It is now, and the harness checks it rather than asserting it: with
+`-Z`, at every arrival, the bot's per-good sample count and mean must equal the
+world's exactly. 100 seeds × 3 difficulties, clean.
+
+*(The first version of that check failed immediately — bot n=1 against world
+n=2. The check was wrong, not the code: the world observes inside
+`game_update` and the bot observes at its next `bot_step`, so comparing after
+the update straddles a phase boundary. Moved to between the two.)*
+
+### Breaking the circularity
+
+The old hiring test, in full:
+
+```c
+return crew_payback(w, k, hops) > price;      // price = world_crew_price(w, k)
+```
+
+and `world_crew_price` is `world_crew_payback * 45 / 100`. So the test is
+`p > 0.45p` — **true for every positive p**, at any price, whether the payback
+figure behind it was right or wrong by a factor of eight. There was no economic
+filter on crew at all; the bot hired whoever it could afford. The upgrade test
+was worse: it made no value judgement whatsoever and contained a literal
+`(void)hops;` discarding the number it had just computed.
+
+**A tautology cannot discover that a price is wrong, and the price being wrong
+is the thing under investigation.** So the rule is now written into `bot.c` as
+the section it governs:
+
+> The bot takes *facts* from `world.h` — prices, burn rates, capacities, what
+> is reachable — and never a *valuation*. It must not call
+> `world_upg_payback` or `world_crew_payback`.
+
+Its estimates are built from what the run has actually produced: prices it has
+paid, encounters it has met, which hand would have covered each, and how often
+a purchase was refused for want of room. All four counters are new; none of
+them existed to be consulted before.
+
+### And immediately, the measurement the audit could only assert
+
+| | P2 | P3 |
+|---|---:|---:|
+| upgrades bought per run | — | 0.69 |
+| **crew hired per run** | — | **0.00** |
+
+With an independent valuation, the bot hires **nobody, ever**, across 400 runs
+per difficulty. The static analysis had claimed crew were priced three to eight
+times their worth; that was arithmetic. This is a reading, and it is the first
+one possible, because until the tautology was removed the answer was fixed at
+"buy" regardless of the price. Every crew role is now a dominated option and
+P8 has to reprice all five from measured coverage.
+
+### Duplicates removed
+
+Four copies of game logic lived in `bot.c`, none of which any test could have
+reported as drifted, because each was only ever read by its own side:
+
+- `upgrade_payback` — dead; nothing called it.
+- `crew_payback` — had already diverged, missing the `net < 0` clamp.
+- `FUEL_WORTH` / `WATER_WORTH` — hand-synchronised constants.
+- a `BASE` price table — **already drifted**: water 13 against the game's 12,
+  fuel 22 against 17.
+- the `world_reachable` loop, re-implemented inside `decide_map` **without its
+  `sector >= SECTORS - 1` guard**, so it would read `node[SECTORS][m]`, one row
+  past the end of the array. Unreachable today only because arriving at the
+  Green Zone sets `ST_WON` before the map is drawn — a state-machine accident
+  rather than a bound.
+
+### Dead weight out of the contest binary
+
+`game_world`, `audio_mood_of` and `game_ui` are harness-only accessors, but
+"never called" is not "not present" without link-time garbage collection, and
+all three were being carried in the shipped executable. Now behind
+`CONVOY_INSTRUMENT`. Verified by comparing object symbol tables rather than by
+reading the size, which did not move — they are smaller than the 512-byte
+section granularity the size report rounds to:
+
+```
+windows object:  game_audio  game_daily  game_init  game_update
+harness object:  game_audio  game_daily  game_init  game_update
+                 audio_mood_of  game_ui  game_world
+```
+
+`game_daily` briefly went out with them and the Windows link failed on an
+undefined symbol — which is the linker doing the job `-Werror` did earlier in
+the phase, and an argument for building both targets on every change rather
+than only the one being worked on.
+
+### Where this leaves the band
+
+67% on THE ROAD is far outside the 40-50% band this log has used since v1. That
+band described a game measured by an agent that thirsted itself to death; it
+has no standing now and is not something to restore by making the game harder.
+It is re-derived in P5, after the bot also learns the pressures a player feels,
+and P4, P7 and P8 all move the economy underneath it first.
+
+
+## P4 — market spread symmetry
+
+One line. `world_sell` moved the local price by `p/8 + 1` per unit while
+`world_buy` moved it by `p/16 + 1` — selling walked the price down twice as
+fast as buying walked it up, for no stated reason. Now symmetric. The 20%
+bid-ask spread, which is the thing that actually prevents a free round trip,
+is untouched.
+
+### The arithmetic, before the change (rule 6)
+
+The round-trip margin depends on the **buy** nudge and the spread, not on how
+fast selling walks the price down, so symmetry cannot open the exploit. Worth
+proving rather than asserting, because the margin is thinner than it looks:
+
+    with the trader aboard the spread is 90%, so a round trip nets
+    0.9 * (p + p/16 + 1) - p  >  0   for p < 20.6 in exact arithmetic
+
+Only integer truncation keeps that negative — `p/16` is 0 below 16 — and water
+at base 12 and scrap at base 6 both sit inside that window. `-X` sweeps every
+good at every price 1..200 with and without the trader, before and after:
+best round trip **+0**, at a list price of 1 where the sell clamp floors the
+take. Unchanged by this phase, as predicted.
+
+### What it was worth
+
+| | P3 | P4 |
+|---|---:|---:|
+| realised ÷ headline | 77.7% | 77.8% |
+| biggest stack sold at one market | 2.23 | 2.35 |
+| units sold per run | 6.0 | **6.5** |
+| credits banked per run | 83 | **91** |
+
+| difficulty | P3 | P4 |
+|---|---:|---:|
+| FORGIVING | 92% | 92% |
+| THE ROAD | 67% | 67% |
+| UNFORGIVING | 38% | 39% |
+
+n=400, zero stalls. Win rate unchanged within noise (SE 2.5 points).
+
+**The headline ratio barely moved, and that is the finding.** 77.8% is
+dominated by the 20% bid-ask spread, not by the decay: at a typical stack of
+about two units the decay was only ever worth one or two points of realised
+value. The "a ten-unit stack realises 41% of headline" figure that motivated
+this phase was arithmetic about a sale nobody makes — the largest stack sold
+at any one market is 2.3 units.
+
+What did move is volume: 8% more units sold and 10% more credits banked,
+because a market that recovers at the same rate it is depleted is worth
+returning to. That is the real effect, and it is a tenth the size of the one
+the static analysis predicted.
+
+**Recorded as a fairness fix, not an economy recovery.** It is still right —
+an asymmetry with no reason behind it is a trap for anyone who does sell a
+large stack, and P5 is about to teach the bot to value hold space, which is
+exactly the behaviour that would have walked into it. Doing it before P5 was
+the correct order for that reason and not for the reason originally given.
+
+### Note on the control
+
+The frozen agent moved too: 72/46/27 → 71/44/27. Expected and worth stating —
+`bot_ref` is a control for *agent* changes, and this phase changes the game.
+Its drift here is the size of the game change as seen by a fixed observer, and
+it is small, which corroborates the measurement above.
+
+
+## P5 — the bot learns human pressure
+
+Game frozen; `bot.c` only. Three changes were proposed; one was measured and
+deleted, two kept, and a fourth was found while measuring.
+
+| difficulty | frozen `ref` | P4 `v4` | P5 `v4` |
+|---|---:|---:|---:|
+| FORGIVING | 71% | 92% | **94%** |
+| THE ROAD | 44% | 67% | **73%** |
+| UNFORGIVING | 27% | 39% | **40%** |
+
+n=400 each, zero stalls, careless play 0% on all three. `ref` unchanged from
+P4, confirming the game did not move.
+
+### Attribution, measured one at a time
+
+Three changes that all move the win rate produce one number and no attribution,
+so each was run alone over the same 400 seeds before all were enabled.
+
+| arm | THE ROAD | verdict |
+|---|---:|---|
+| baseline | 67% | — |
+| hold pressure | 67% | **byte-identical — deleted** |
+| route lookahead | **72%** | kept |
+| contract provisioning | 65% | kept, for a reason other than win rate |
+
+**Hold pressure was doubly redundant and was removed.** The plan asked for it
+on the premise that the bot never approaches capacity and so never values the
+racks. P1 had already disproved the premise — occupancy is 69% mean and 94%
+peak; the earlier "30-45%" figure was *end-of-run* cargo, read after selling
+down. Implemented anyway to follow the phase description, it then turned out to
+be structurally unreachable: speculation already requires six free slots, so
+the "is the hold tight" test could never be true. Its arm produced 268 wins
+against the baseline's 268, run for run identical. The constraint was already
+there; what was missing was the bot *valuing* the space, which P3's
+`hold_blocked` counter already does.
+
+**Route lookahead is worth five points.** `decide_map` scored one link ahead;
+a player sees the whole route drawn on screen. Scoring the chain two hops out
+is not clairvoyance, it is reading what is already displayed.
+
+**Contract provisioning costs two points and is kept anyway.** Nothing in the
+bot ever bought toward a job it had accepted — it took the contract and hoped
+the goods turned up. Delivery rate **50% → 61%**, at about three credits a run.
+A shipped mechanic going from half-working to two-thirds-working is worth more
+than a difference inside the noise band.
+
+### The finding that would have corrupted P7
+
+Scrap is the cheapest good in the game at base 6, so the bot reserved none of
+it — `keep[G_SCRAP] = 0`, commented "pure trade good" — and sold every unit.
+Scrap is also the **repair currency**. A convoy carrying none cannot fix a
+breakdown at any price.
+
+Measured with the new per-kind report: **60% of breakdowns and 52% of leaks
+were refused because there was nothing to pay with**, not because refusing was
+the better deal. Those two are the same keypress and mean opposite things.
+
+Reserving three units — one repair's worth — with no change to the game at all:
+
+| | accept before | accept after | forced before | forced after |
+|---|---:|---:|---:|---:|
+| BREAK | 3% | **29%** | 60% | 31% |
+| LEAK | 17% | **58%** | 52% | 6% |
+
+Had this gone unfixed into P7, the obvious reading of "BREAK is accepted 3% of
+the time" is "the deal is bad, make it cheaper" — and the tables would have
+been tuned against the observer's shopping habits. **The forced-decline column
+paid for itself on its first use.**
+
+It is also a real design tension, not only a bot one: making the cheapest and
+most-dumped good the repair currency means repairs are structurally hard to
+afford, for a player as much as for a bot. Noted for P7.
+
+### The state of the encounter table, as the brief for P7
+
+n=400. Target: every kind chosen both ways at least 15% of the time.
+
+**7 of 14 are real decisions:** RAID 43/56, SICK 53/47, BREAK 29/70, TOLL
+51/48, PLAGUE 29/70, CHECKPOINT 47/52, LEAK 58/41.
+
+**7 of 14 are non-decisions, and every one is "never accepted":**
+
+| kind | accept | costs |
+|---|---:|---|
+| WRECK | 2% | 1 fuel |
+| CACHE | 4% | 1 fuel |
+| SIGNAL | 4% | 1 fuel |
+| BRIDGE | 5% | 1-2 fuel |
+| TRADER | 9% | 2-3 water |
+| REFUGEE | 10% | 1-3 water |
+| RIVAL | 12% | 2-4 of a random good (48% forced) |
+
+**Every single one charges in fuel or water — the two things that end runs.**
+Four of them are the "free money" kinds the static analysis identified as pure
+gains; they are refused nineteen times in twenty, because a competent convoy
+will not spend survival margin to obtain credits. This is the structural thesis
+of P7 confirmed from the engagement side rather than derived from arithmetic,
+and it is the argument for letting some kinds pay in water and fuel rather than
+only charging in them.
+
+RIVAL is a different fault: 48% forced. It demands 2-4 units of a *random*
+good, and a convoy reserves most goods for survival, so the cost frequently
+cannot be met at all. That is a table problem, not a shopping problem.
+
+### The band, derived
+
+The 40-50% band this log has used since v1 described a game measured by an
+agent that sampled prices by loitering and thirsted itself to death. It has no
+standing. The reasoning behind it does: *below about 30% skilled the game reads
+as unfair, above about 60% the decisions stop mattering.* That is a statement
+about play, not about the observer, and it survives.
+
+Against an honest, competent agent, v4 targets:
+
+| difficulty | band | now |
+|---|---|---:|
+| FORGIVING | 60-70% | 94% |
+| THE ROAD | 42-52% | 73% |
+| UNFORGIVING | 22-32% | 40% |
+
+All three are far above. **The game is not too hard, it is much too easy for a
+competent player** — the opposite of what three releases of this log reported,
+because the reported difficulty was the instrument's handicap.
+
+The retune is *not* done here. P7 changes the encounter tables and P8 reprices
+kit and crew — which the bot currently refuses to buy at all, so making them
+worth buying will raise these numbers further still. Tuning the difficulty
+table now would be tuning twice and measuring once. It is P8b, after the
+economy underneath it stops moving.
+
+
+## P6 — contracts as a real mechanic
+
+P2 stopped the board jamming on an *offered* job. This phase deals with the
+second jam and gives refusing a name.
+
+| difficulty | P5 | P6 |
+|---|---:|---:|
+| FORGIVING | 94% | 95% |
+| THE ROAD | 73% | 72% |
+| UNFORGIVING | 40% | 40% |
+
+n=400, zero stalls. Unchanged within noise, which is the expected shape: this
+phase makes a mechanic work rather than making the run easier.
+
+### The second jam
+
+`by_sector` is an *earliest* delivery point, not a deadline, so a taken job
+that never found its cargo simply stayed taken -- and since the board only
+posts when it is clear, one such job disabled contracts for the rest of the
+run. A taken job now lapses three sectors past the earliest place it could have
+been handed over.
+
+Measured, it fires **0.09** times per run: smaller than a 63% delivery rate
+suggests, because most undelivered jobs are still in hand when the run ends
+rather than sitting on the board blocking it. Worth fixing anyway -- the failure
+it prevents is total for the rest of a run, not marginal.
+
+### Refusing is now a thing you can do
+
+`X` on the contracts tab declines. The help screen has advertised
+"X SELL / REFUSE" since v1 while three of the five tabs silently ignored it.
+The panel says so too: a binding with no prompt is a binding nobody presses.
+
+### Every offer now has a known fate
+
+n=200, THE ROAD:
+
+| fate | per run |
+|---|---:|
+| offered | 2.54 |
+| — accepted | 1.03 |
+| — — delivered | 0.65 |
+| — — forfeited | 0.09 |
+| — declined at the board | 1.50 |
+| — lapsed on departure | 0.00 |
+
+Residual: **+0.00**.
+
+The counter was one bucket called `expired` until it was split three ways, and
+the split is the point: a job the player refused, one they walked away from,
+and one they took and could not deliver mean three different things about the
+mechanic and were indistinguishable in a single number. This log has now been
+caught by that shape four times -- forced versus chosen declines, offered versus
+taken jams, and twice on tools reporting success while doing nothing.
+
+**The decline did not raise throughput**, and that is worth stating plainly:
+offers went 2.50 -> 2.54, inside noise, because P2's lapse-on-departure
+had already unjammed the board. What moved is `lapsed` -> **0.00**: refusals
+are now deliberate rather than accidental. Its value is agency and consistency,
+not volume.
+
+Offers per run stand at 2.54 against **1.48** at the v4 epoch — a 72% rise
+across P2 and P6 — while the delivery rate is 63% of accepted.
+
+## P7 — encounters: retune, then return survival margin
+
+**14 of 14 encounter kinds are now real decisions**, against 7 at the start of
+the phase. The plan's target was that every kind be chosen both ways at least
+15% of the time; it is met with no kind outside 25/75.
+
+| difficulty | P6 | P7 |
+|---|---:|---:|
+| FORGIVING | 95% | 97% |
+| THE ROAD | 72% | 82% |
+| UNFORGIVING | 40% | 56% |
+
+n=400, zero stalls, `-X` clean, determinism clean.
+
+### The biggest fix was in the observer, not the game
+
+`decide_event` carried a hard veto: any payment in fuel or water that left the
+convoy below its reserve was refused **before the deal was priced at all**.
+Because the bot provisions exactly to its reserve, that fired on any payment of
+one unit -- and six of the fourteen kinds charge in fuel or water.
+
+Removing the veto and letting the existing survival multiplier price the dip
+instead, with no change to any table:
+
+| kind | before | after |
+|---|---:|---:|
+| SIGNAL | 8% | 87% |
+| CACHE | 5% | 76% |
+| TRADER | 12% | 66% |
+| REFUGEE | 11% | 51% |
+| BRIDGE | 5% | 43% |
+
+Five kinds went from dead content to genuine decisions **without touching the
+game**. Had the phase started by retuning payoffs as planned, it would have
+been adjusting numbers on kinds that were being refused categorically whatever
+they offered.
+
+**The first attempt at this failed and nearly produced the wrong conclusion.**
+Relaxing the veto to a "risk premium" moved the accept rates by two points,
+which reads as "the tables really are the problem". The premium was
+double-counted: `good_value` already triples fuel and water below reserve, and
+the new code multiplied by three again -- twelve times market price for a unit
+of fuel, which no payoff in the table can clear.
+
+### Three genuine table faults
+
+**SIGNAL** at 87% accept was a non-decision in the other direction: a unit of
+fuel for ninety-odd credits is a formality. Trimmed to 25-50 + depth*4 -> 63/36.
+
+**RIVAL** was 43% *forced*. It named a good at random, and a convoy reserves
+most goods for survival, so the commonest outcome was not refusal but
+inability -- which reads the same on screen and means the opposite. A rival now
+eyes what is actually aboard, and never asks for more than is carried:
+22/77 with 43% forced -> 57/42 with 3% forced.
+
+**WRECK** was the one kind that was genuinely a bad trade: a unit of fuel for
+three to six scrap, about 17 credits for 27, and 51 for 27 once fuel mattered.
+
+Trying to fix it by making it *more generous* made it worse. Raising the
+salvage to 5-9 left acceptance at 11% while forced refusals went from 5% to
+21%: a bigger reward needs more free slots than a hold at 69% occupancy has,
+and P2's room check refuses it outright. **More generous and less attainable.**
+
+### 7b — the table can now return survival margin
+
+Every encounter charged in the two resources that end runs and paid in credits
+worth about 3% of the final score. WRECK is reversed: parts in, fuel out. You
+spend scrap stripping the wreck and come away with what is in its tank. It is a
+real decision precisely because the answer changes -- scrap is worth more as
+trade goods when the convoy is flush and worth nothing against fuel when it is
+not. 12% -> 78% accepted.
+
+CACHE can now hold water as well as ammo or meds, for the same reason.
+
+The first version asked 2-3 scrap and was unaffordable 55% of the time, because
+breakdowns draw on the same small stock. Reduced to 1-2.
+
+### Two contended currencies
+
+BREAK at 38% forced and PLAGUE at 30% were the same shape as the scrap finding
+in P5: the currency is too scarce for the ask. BREAK reduced to 1-2 scrap
+(38% -> 11% forced); the bot's medicine reserve raised to 2, since plague asks
+for one or two and the convoy starts with one (30% -> 25%).
+
+### Final state, n=400, THE ROAD
+
+| kind | accept | refuse | forced |
+|---|---:|---:|---:|
+| WRECK | 78% | 21% | 21% |
+| CACHE | 78% | 21% | 0% |
+| SIGNAL | 63% | 36% | 0% |
+| TRADER | 61% | 38% | 6% |
+| LEAK | 59% | 40% | 8% |
+| RIVAL | 55% | 44% | 4% |
+| REFUGEE | 54% | 45% | 4% |
+| SICK | 51% | 48% | 4% |
+| BREAK | 51% | 48% | 11% |
+| TOLL | 48% | 51% | 2% |
+| BRIDGE | 47% | 52% | 0% |
+| CHECKPOINT | 45% | 54% | 15% |
+| RAID | 41% | 58% | 14% |
+| PLAGUE | 34% | 65% | 25% |
+
+### A 50x faster harness, and what it proves
+
+A balance sweep never looks at a pixel, but the core drew a full 640x480 frame
+twice per step regardless -- about 25 billion pixel writes for a 400-seed arm,
+which was nearly all the wall clock. `-Q` shrinks the *logical* framebuffer
+while keeping the full allocation, so every primitive clips almost everything
+away and nothing can write out of bounds. It is only sound because no game
+logic reads the framebuffer dimensions: `game.c` touches `fb->w` exactly once,
+in a draw call.
+
+A six-arm phase gate went from about fifteen minutes to **sixteen seconds**.
+
+The acceptance test is that `-Q` produces byte-identical BOT lines to a
+full-size run, which it does -- and that is worth having for its own sake: it
+proves the render path cannot influence a balance number.
+
+## P8 — kit and crew, derived from readings
+
+| difficulty | P7 | P8 |
+|---|---:|---:|
+| FORGIVING | 97% | 97% |
+| THE ROAD | 82% | 80% |
+| UNFORGIVING | 56% | 56% |
+
+n=400, zero stalls, `-X` and `-Z` clean.
+
+### The rate was wrong by an order of magnitude
+
+`world_crew_payback` used `hops * 3 / 5` fires per role, from a comment stating
+encounters were 30% of nodes "across five kinds". There are **fourteen**. At 13
+hops the formula claims 7.8 fires per role; measured over 400 runs:
+
+| role | formula | measured | overstated by |
+|---|---:|---:|---:|
+| MECHANIC | 7.8 | 0.81 | 9.6x |
+| GUARD | 7.8 | 0.79 | 9.9x |
+| MEDIC | 7.8 | 0.80 | 9.8x |
+| SCOUT | 7.8 | 0.44 | 17.7x |
+
+Crew are now priced against the road actually ahead, using `world_road_ahead`,
+which already existed and was already counting the storms and encounters left.
+
+### But the pricing was never the binding constraint
+
+With the rate corrected, every role was still **net-negative before its fee**:
+23 to 38 credits of coverage against **84 credits of water** over a run. No
+price could fix that — the floor is 10, so even free crew lost money. An honest
+bot hiring nobody in 400 runs per difficulty was the correct answer to the
+question as posed.
+
+The ration is the finding. Crew now drink every third day rather than every
+second: `keep` falls from 84 to 56, which is the smallest change that makes the
+trade defensible rather than arithmetically impossible. They remain mouths that
+drink; they are no longer mouths that cost more than they can ever save.
+
+### Two bugs found by writing the arithmetic down
+
+**Integer truncation zeroed the whole calculation.** Written as
+`events * 45 / 100 * 3 / 14`, a rate of about 0.8 fires per role rounds to
+**zero** mid-expression, so every role priced at the floor regardless of the
+road ahead. Computed in one expression instead.
+
+**The bot kept its own copy of the ration schedule.** `crew_value` tested
+`day % 2` directly; when the game moved to `day % 3` the bot went on costing
+hires against a burn rate that no longer existed. Exported
+`world_crew_drinks_on` — a fact, which the P3 invariant permits the bot to read
+— and deleted the copy. Hiring went 4% of runs to **12%** on that fix alone.
+
+### Two documented falsehoods removed
+
+**The medic's water saving was counted twice.** `world_water_burn_on` cancels
+exactly the medic's own thirst and nobody else's, and `world_crew_payback` then
+halved its keep again for "runs the water discipline too".
+
+**Fitting water tanks made every hand more expensive for nothing.** Crew keep
+was halved whenever tanks were fitted, but tanks zero the burn on *even* days
+and crew ration on *odd* ones. The synergy priced there does not exist.
+
+### Where it landed
+
+Runs hiring at least one hand: **0% → 12%**. Short of the 15% bar
+`DESIGN-kit.md` set, and recorded as such rather than tuned to hit it: the
+remaining gap is that the bot's own valuation needs to have *seen* the trouble
+a role covers before it will pay for it, and crew are offered from sector 5 on,
+by which point a run has met one or two encounters. That is defensible
+behaviour, not a fault, and the number is honest.
+
+## P8b — the difficulty table, retuned against a settled economy
+
+| difficulty | band | P8 | P8b |
+|---|---|---:|---:|
+| FORGIVING | 60-70% | 97% | **70%** |
+| THE ROAD | 42-52% | 80% | **43%** |
+| UNFORGIVING | 22-32% | 56% | **27%** |
+
+n=400, zero stalls, careless play 0% on all three.
+
+Held until last on purpose: P7 changed the encounter tables and P8 the crew
+economy, and retuning difficulty before those settled would have been tuning
+twice and measuring once.
+
+| | cr | water | fuel | fuel scale | spoil | storm | settle |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| FORGIVING | 140 | 9 | 6 | 1 | 28 | 13 | 47 |
+| THE ROAD | 130 | 8 | 5 | 2 | 35 | 15 | 44 |
+| UNFORGIVING | 120 | 7 | 5 | 3 | 42 | 20 | 40 |
+
+**Settlement density is no longer the strongest lever.** P1 measured it as the
+single biggest one; sweeping it alone now moves THE ROAD only from 80% to 73%
+across 48 down to 32. Starting stock and the fuel price curve do most of the
+work, because a competent agent that provisions correctly is limited by what it
+can carry and afford rather than by how often it can stop.
+
+### A design property that turned out to be an artifact
+
+The table's comment claimed each setting leaned on a different failure: easy
+and normal thirst-led, hard fuel-led. That was measured and true in v3.
+
+It is not true now, and cannot be made true by skewing the starting stock. With
+water tight and fuel plentiful, or the reverse, or the fuel curve doubled, the
+death mix stays within a few points of 50/50 on every setting — only the win
+rate moves.
+
+The old asymmetry was substantially an artifact of the bot's water reserve,
+which sampled a single day's parity and collapsed to two units when the parity
+was wrong (see P3). Against an agent that provisions both resources honestly,
+the two failures balance.
+
+**Recorded rather than recreated.** Contorting the table to reproduce a split
+that existed because the observer was broken would be tuning to an artifact —
+the exact failure this release has spent nine phases removing.
+
+### Process
+
+A probe script edited the table with `sed`, produced a trailing-comma syntax
+error, built into `/dev/null`, and reported **73% for five very different
+configurations** — every one of them measuring the previous binary. Caught
+because five identical numbers from five different inputs is not a result.
+Rewritten with `set -e`, an unsilenced build, and an assertion that the edit
+changed the file. **Fourth instance this release of a tool reporting success
+while doing nothing.**
+
+## P9 — presentation
+
+Win rates 70 / 43 / 27, unchanged from P8b at n=400. A presentation phase that
+moves the win rate has leaked behaviour, so that equality is the gate.
+
+### The payload is drawn
+
+It was rendered **nowhere**. `T_PAYLOAD` and `T_PAYLOAD_SAFE` were defined and
+referenced by nothing; `world_payload()` was called only by the harness. A
+player could cross all fourteen sectors and reach the Green Zone having never
+seen the thing the entire run is about.
+
+Worse, the two numbers that did exist disagreed by exactly that amount: the HUD
+counts `world_cargo`, which **includes** the payload, while the cargo grid
+iterated `held[]`, which does not. The gap between them *was* the six crates.
+
+Six green cells now head the hold, labelled once. HOLD 25/30 and the grid now
+agree.
+
+The grid also sizes to `world_cargo_cap()` rather than the `CARGO_CAP`
+constant. With racks fitted it drew thirty cells for a forty-slot hold, so ten
+slots of paid-for cargo were invisible.
+
+### A demand for the seed no longer looks like scrap
+
+`ui_event` tested `lose_good >= 0` and let `-2` — the payload — fall into the
+generic random-cargo branch. The highest-stakes decision in the game, where a
+crate is 500 score against a win's 1000, was drawn identically to losing three
+units of junk. It now renders as crates, in the payload's own colour.
+
+### Things the screen said that were not true
+
+- **"ESC TO SKIP"** on every cut-scene panel. ESC quits the game; it has never
+  skipped anything. The opening told players to press the one key that ends the
+  run. Now "ANY KEY TO CONTINUE", which is what actually happens.
+- **"YOU CANNOT PAY THIS"** appeared when the real reason was a full hold.
+  `world_can_accept` refuses for two unrelated reasons and said the same thing
+  for both, so a convoy with a full purse was told it was broke. Split via
+  `world_accept_block`.
+- **The water burn was for the wrong day**, and hidden entirely from solo
+  drivers. It showed `world_water_burn(w)` — the day already paid — while the
+  hop about to be taken charges for `day + 1`; with crew aboard or tanks fitted
+  those differ half the time. And the whole readout only appeared with crew, so
+  a lone driver was never told water is spent per day, while thirst is one of
+  the two things that end a run.
+- **A free encounter drew as "− icon × 0"**, which reads as a cost of nothing
+  rather than as no cost — and it is the only on-screen evidence that a hire is
+  earning its keep. Now "FREE".
+- **Replaying a daily run gave a different map.** `restart` took a fresh seed
+  regardless of daily mode.
+
+### Collisions
+
+The garage printed "FITTED TUNED ENGINE" straight over "SHOULD RETURN 60": the
+owned list runs from `y+86` at a 15px pitch while the payback and road-ahead
+lines were fixed at `y+92` and `y+118`. `draw_outfit` now returns where its
+list ended and the extras draw beneath it.
+
+Found by looking, not by reading coordinates — the `-S <tab>` flag added in P6
+exists because hunting the right frame by hand does not scale to a whole
+presentation pass.
+
+### Every string is now drawn
+
+`T_MARKET` and `T_END_AGAIN` were exact duplicates of `T_TAB_MARKET` and
+`T_AGAIN` that nothing referenced; removed. `T_CHEAP_HERE` and `T_DEAR_HERE`
+were the legend for the price-trend arrow — the signal the entire trade route
+is built from, drawn bare with no explanation anywhere outside the help screen.
+They are now shown on the line that already describes the selected good.
+
+A grep for unreferenced `T_*` symbols returns nothing.
+
+## P10 — documentation, and the shipped state of v4
+
+### Final gate
+
+| difficulty | band | v4 final (n=1000) |
+|---|---|---:|
+| FORGIVING | 60-70% | **69%** |
+| THE ROAD | 42-52% | **43%** |
+| UNFORGIVING | 22-32% | **25%** |
+
+Zero stalls. Careless play 0%. Sanitizers clean, determinism clean over 200
+seeds on each difficulty, market-exploit probe clean across every good at every
+price with and without the trader aboard.
+
+**110,592 bytes — 7.50% of the floppy.**
+
+### What the documents claimed
+
+`convoy/README.md` described **Version 1**: "five encounter types" against
+fourteen, "five fuel and nine hops" against six and thirteen, a seven-file
+layout for a twenty-two file tree, six of twenty harness flags, and **no row
+for the left and right keys** — the ones that reach the garage, the crew board,
+the contracts and the journal. A player following that table could not open
+four of the game's five screens.
+
+It also carried the v3 difficulty figures as though they were current. They are
+now published with the caveat that matters: they are not comparable to anything
+before v4, because the generator was re-seeded into three streams *and* the
+agent that produced them was measuring its own handicap.
+
+`DESIGN-kit.md` prescribed two values its own log records as wrong — a price at
+3/4 of payback where the shipped figure is 45%, and salvage at 45% where
+TESTLOG explicitly records that value as discredited. A correction block was
+added rather than editing the body: the document's worth is the record of a
+model being tested, and quietly fixing its numbers would destroy exactly that.
+The block also notes that the payback model underneath it was wrong by an order
+of magnitude until P8 — the *method* was sound, the rate it was fed was not.
+
+`NOTES.md` opened with "make it language-free — the strongest version ships no
+alphabetic font at all", and reversed that sixty lines later without a marker.
+A reader working top to bottom would have acted on the retracted advice. It now
+carries a superseded note pointing forward.
+
+`tools/mkpage.py` hard-coded the byte count, so the published page misreported
+the size after every build that changed it — which is every build worth
+publishing. It measures the binary now.
+
+### New entries in NOTES
+
+Five lessons that generalise past this game: split the generator before tuning
+anything; a price derived from a payback makes every test of it a tautology;
+freeze a reference agent before improving the current one; a win-rate sweep
+cannot resolve a rare mechanic; and four tools reporting success while doing
+nothing, with the rules that came out of it — identical is a red flag, never
+silence a build, never pipe a check whose exit status you depend on, and when a
+guard has been defeated twice, move it somewhere it cannot be bypassed.
+
+## P11 — the bot optimised, and kit priced from A/Bs
+
+Final v4 gate, n=1000: **61 / 47 / 27**, inside bands of 60-70 / 42-52 / 22-32.
+Zero stalls, careless 0%, sanitizers/determinism/exploit clean.
+
+### Forced-policy A/Bs: what each option is actually worth
+
+Every fitting and hand granted free at the start, n=600 on THE ROAD against a
+44% baseline. This is the measurement the whole release was building toward,
+and it could not have been made before P3 removed the tautology.
+
+| option | win rate | delta |
+|---|---:|---:|
+| kit ECON | 86% | **+42** |
+| kit TANKS | 80% | **+36** |
+| kit HOLD | 50% | +6 |
+| kit ARMOUR | 49% | +5 |
+| crew MEDIC | 48% | +4 |
+| crew TRADER | 35% | −9 |
+| crew SCOUT | 25% | −19 |
+| crew MECHANIC | 24% | −20 |
+| crew GUARD | 21% | **−23** |
+
+### The bot was leaving 12 points on the table
+
+`upgrade_worth_buying` demanded **120 credits of working capital left over**
+after a purchase, on a convoy that typically holds 100-150. It blocked almost
+every fitting -- including the economiser, worth +42. The gate dated from when
+kit was overpriced and capital compounded faster than any fitting returned;
+neither had been true for several phases.
+
+Swept: 120 → 43%, 80 → 49%, 50 → 53%, 30 → **55%**, 15 → 55%. Set to 30.
+
+### Kit was priced by instinct, and two of four were backwards
+
+`world_upg_payback` still carried the original guesses, including armour at
+`hops * 3/5 * 20` -- the same discredited five-kinds rate that broke the crew
+pricing in P8. It made armour the **dearest** fitting in the game while the
+A/B puts it at the **least valuable**. Repriced against the measured deltas.
+
+Two valuation bugs in the bot, both found by a take rate stuck at zero:
+
+- `UPG_HOLD` was valued from buys refused for want of room. That counter can
+  never fire: the bot only speculates when six slots are already free, so the
+  branch is unreachable and the racks were worth zero forever -- 0 fitted from
+  552 offers. Valued from measured occupancy instead.
+- `UPG_ARMOUR` divided before multiplying, rounding a 0.8-per-run rate to
+  zero. **Exactly the fault fixed in the crew payback one phase earlier**,
+  reproduced days later in the same shape.
+
+Result -- every fitting is now a live choice, meeting the `DESIGN-kit.md` bar
+of at least 15% taken and no more than 85%:
+
+| | offered | taken |
+|---|---:|---:|
+| HOLD | 615 | 42% |
+| ECON | 803 | 57% |
+| ARMOUR | 530 | 65% |
+| TANKS | 858 | 34% |
+
+### Crew are the one system v4 could not fix
+
+Every role is net-negative **even when granted free**, and the reason is
+structural rather than a matter of price:
+
+| ration | free GUARD | free SCOUT |
+|---|---:|---:|
+| every 3 days | −22 | −21 |
+| every 6 days | −13 | −8 |
+| never drinks | **+5** | **+9** |
+
+At zero water cost a specialist is worth +5 to +9, because its ability fires
+**0.8 times per run** -- three of fourteen kinds at 3.7 encounters. Any ration
+that preserves "mouths that drink" outweighs that by three to five times.
+
+The role that came closest to viable is the trader, and the reason points at
+the fix: its benefit is **always on**. The scout is the sharpest illustration
+of the opposite -- it negates storms entirely, which sounds strong and measures
+at −19, because a competent convoy already routes around storms. It guards
+against something good play avoids.
+
+**Left as measured rather than papered over.** Crew are a presence problem, not
+a pricing problem, and the fix is content: passives, a third branch in
+encounters, personal errands, and a voice. That is v5.
+
+### AddressSanitizer caught a stray write on its first run
+
+The per-role counter added this phase indexed `crew_offered[w->offer_crew]`
+outside the branch that sets it. `offer_crew` is `0xFF` when nobody is looking
+for work, so a five-element array was being written at index 255.
+
+# v5 — the people you pick up
+
+Crew were shipped in v4 measured and unfixed: every role is net-negative even
+when granted free, because a role covers 3 of 14 encounter kinds and encounters
+fire 3.7 times per run, so its ability fires **0.79 times a run**. v5 does not
+reprice them. It changes when they act (a third branch on every encounter) and
+where they come from (recruited from the five recurring characters).
+
+## P0 — instrument, freeze, prove inert
+
+No gameplay change, and that is the exit criterion: **1,200 BOT lines
+byte-identical** to the pre-phase build across three difficulties. An unread
+RNG stream and unwritten counters must be provably inert, not presumed so.
+
+Adds `rng_people`, a fourth stream. Every v5 feature — alt-branch success
+rolls, errand generation, recruit offers, who speaks at a stop — draws from it
+and never from `rng_event` or `rng_offer`. v4 established the cost of getting
+this wrong: one extra draw in `roll_event` reshuffles every later market offer
+for that seed, and the resulting numbers still look entirely plausible.
+
+### The supply of meetings, measured before the gate was designed
+
+n=800, THE ROAD:
+
+| character | met | met twice | mean end regard |
+|---|---:|---:|---:|
+| VULTURE | 51% | 18% | +0.04 |
+| MARLOW | 23% | **2%** | +0.00 |
+| OKONJO | 39% | 9% | +0.01 |
+| SISTER RAE | 39% | 8% | −0.02 |
+| THE WALKER | 51% | 14% | +0.23 |
+
+The gate the plan proposed — met twice and regard ≥ +2 — passes in **15% of
+runs against a 60-80% target.** Designing Phase 2 around it would have produced
+an empty crew board in six runs out of seven and looked like a balance problem.
+
+Four candidate gates, measured together:
+
+| gate | runs with anyone recruitable |
+|---|---:|
+| met≥1, regard≥1 | **65%** |
+| met≥2, regard≥1 | 21% |
+| met≥1, regard≥2 | 15% |
+| met≥2, regard≥2 | 15% |
+
+**`met≥1, regard≥1` is the gate**, and it is a reading rather than a taste.
+
+### Two structural problems this exposed, for Phase 2
+
+**Regard barely moves.** Mean end regard is +0.00 to +0.23 on a ±3 scale. The
+±1 per interaction cancels almost exactly, because accepting and declining are
+each right about half the time. A gate reading regard is reading noise unless
+the shifts get larger or the sign becomes less symmetric — which is the same
+conclusion the anti-farming rule arrives at from the other direction.
+
+**The character/encounter mapping is badly uneven.** Marlow owns 1 of 14 kinds
+(EV_RIVAL); Vulture and the Walker own 3 each. She is met in 23% of runs and
+twice in **2%** — and under the "enemies cost more" decision she needs a
+*higher* gate than anyone. As it stands Marlow is unrecruitable in practice.
+Three kinds (BREAK, BRIDGE, LEAK) are mapped to nobody and are the obvious
+place to even this out.
+
+### Baseline
+
+`CREWSET` entropy **0.39 bits of 5.00**, modal set `0x00` at **93%** of runs —
+93% end with no crew at all. That is the number replayability is measured
+against.
+
+## P1 — the third branch
+
+**Every crew role is now worth having.** From v4's −23 to +4, at n=600 on THE
+ROAD against a 47% baseline:
+
+| role | v4 | v5 P1 |
+|---|---:|---:|
+| MECHANIC | −20 | **+14** |
+| GUARD | −23 | **+10** |
+| MEDIC | +4 | **+13** |
+| SCOUT | −19 | **+16** |
+| TRADER | −9 | **+17** |
+
+Bar was ≥ +8 with none above +45 (ECON is +42; a role beating it would be the
+new mandatory purchase). All five clear it.
+
+Difficulty is undisturbed at 63/47/28 against v4's 61/47/27 — crew are still
+not hired by default, so the calibration holds.
+
+### What changed
+
+A hand aboard now offers **a third way through every encounter**, not a silent
+modifier on three of fourteen kinds. Matched to the trouble it is a free
+manoeuvre at 80% base; anyone else improvises for one unit at 60%. Measured,
+an alt is offered on **100% of encounters** against the 0.79-fires-per-run the
+old ability managed — the 4.7× change in presence the phase was built for.
+
+Odds move with regard (`base + regard × 8`, clamped 35–85). That is the first
+use the −3..+3 range has ever had beyond its sign.
+
+It cannot dominate: cheaper than accepting, so it can fail, and **failing costs
+one more than declining would have**. Branch mix with a hand aboard:
+
+| | share |
+|---|---:|
+| accept | 65% |
+| attempt | 16% |
+| decline | 19% |
+
+Each ≥15%, alt ≤60%, attempt failure 35% inside the 20–45% band.
+
+### Three faults found by measuring, not by reading
+
+**The scout measured −37.** Widening `world_reachable` for the scout's extra
+route without widening `world_can_travel` let the bot select nodes the game
+then refused to move to — it pressed travel and nothing happened. Both now read
+one `world_links()`. This is the same class as v4's map-hash bug: two functions
+that must agree, and only one was changed.
+
+**The guard's passive fought the guard's own branch.** Its first version cut
+what a threat cost to *settle*, which measured well in isolation but crowded
+out the manoeuvre — the convoy simply paid instead, and the alt was chosen 5%
+of the time. Both passives now sit **outside** the encounter tables entirely: a
+medic rations the convoy's water through a storm, a guard lashes the load so
+the fuel stays aboard. A passive competing with the same hand's manoeuvre is
+one feature fighting another.
+
+Before that, the guard's passive cut what *refusing* costs and measured +6 —
+worthless because the convoy mostly pays rather than refuses. **That is exactly
+the fault that made plate armour worthless in v4, reproduced two releases
+later**, and it was caught the same way: by an A/B that would not move.
+
+**The bot skipped the branch precisely when it mattered.** `decide_event`
+returned "refuse" the moment accepting was unaffordable, before the third
+option was considered at all — and a manoeuvre that costs nothing is affordable
+in exactly the situations where paying is not. Fixing the ordering took the
+attempt rate from 6% to 12%; raising both odds tiers took it to 16%.
+
+### On the exit criterion that appeared to fail
+
+Four kinds looked like their forced-refusal rate had risen against the v4
+table. It had not: that table was measured at v4 P7, before P8, P8b and P11
+changed crew pricing, kit pricing and the difficulty table, so it was never a
+like-for-like comparison — and a no-crew baseline offers no alt at all, so P1
+could not have caused it. Measured properly, with and without a hand aboard on
+the same build, the worst forced rate is **9% either way**. The branch does not
+make anything unaffordable.
+
+## P2 — crew are the characters
+
+The five hands are now the five people on the road. Four pairings were already
+exact — the chief owns raids, the doc owns sickness, the trader owns deals, the
+drifter owns wrecks — and Marlow is the one invention: the rival convoy captain
+joins as mechanic after her own rig dies, a story only losing can tell.
+
+`crew[]` stays indexed by role, so every ability site in `roll_event` compiled
+untouched and identity came for free.
+
+### The gate, chosen from P0's measurement
+
+`met >= 1 && regard >= 1`, passing in **67% of runs** against a 60–80% target.
+Per character, recruitable in:
+
+| | VULTURE | MARLOW | OKONJO | SISTER RAE | THE WALKER |
+|---|---:|---:|---:|---:|---:|
+| recruitable | 21% | 12% | 19% | 13% | 35% |
+
+All five are reachable. **Enemies cost more in money, not in goodwill** — the
+first version gated Vulture and Marlow at regard +2 and measured them at 1%
+recruitable, because the anti-farming rule below makes +2 genuinely rare. A
+price premium says the same thing and stays attainable.
+
+### Standing now tracks what a choice cost
+
+Accepting is usually correct anyway, so goodwill accumulated as a free
+byproduct of playing well and the ±3 range never meant anything. Worse, it was
+a loop: positive regard already zeroes `pay_qty`, so a hand that made
+encounters free went on earning goodwill from the encounters it had made free.
+
+Paying nothing now earns nothing: accept **at a price** +1, accept free 0,
+decline −1, manoeuvre succeeded +1, failed −1. Capped at one step per person
+per sector.
+
+### Two agreement bugs, the same shape as ever
+
+`world_crew_drinks_on` and `world_water_burn_on` disagreed about the ration.
+The burn function charges `crew_count - 1` — the first hand takes a shift
+rather than adding a mouth — while the bot's model charged every hand. **This
+is the exact fault P8 fixed by exporting the schedule rather than copying it**,
+reintroduced by an abandoned experiment that survived in one of the two places.
+Then, fixing it, I made the *other* function agree in the wrong direction and
+had to measure again to see which was authoritative.
+
+And the crew hiring gate demanded **100 credits of working capital** left after
+a hire, on a convoy holding 100–150 — the identical fault the kit gate had at
+120, found the identical way: an option offered constantly and never taken.
+
+### Where it landed
+
+P1's A/Bs are preserved, which was this phase's real exit criterion — it
+changes who ends up aboard, not what being aboard does:
+
+| role | P1 | P2 |
+|---|---:|---:|
+| MECHANIC | +14 | +12 |
+| GUARD | +10 | +10 |
+| MEDIC | +13 | +12 |
+| SCOUT | +16 | +16 |
+| TRADER | +17 | +18 |
+
+**Two criteria are not met and are recorded rather than tuned away.** Take
+rates are 12 / 2 / 18 / 10 / 12% against a 15–85% bar, and `CREWSET` entropy is
+0.54 bits against a 2.0 target — up from 0.02 at the start of the phase, but
+with 92% of runs still ending crewless. Both are the same underlying fact: the
+bot is too conservative about hiring, and crew pricing still derives from a
+coverage model the third branch made obsolete. That repricing is P5's job and
+doing it here would have meant fitting a curve to a number about to move.
+
+## P3 — errands
+
+A personal favour from someone aboard, deliberately **not** a `Contract`. That
+structure is one-at-a-time, so an errand sharing it would disable the job board
+— the exact failure v4 spent a phase fixing — and its six fate counters would
+stop meaning anything.
+
+Two kinds. **ERR_VISIT** asks the convoy to stop at a settlement of a given
+trade before a sector: it costs no cargo, it costs *routing*, which is the
+resource the map contests and nothing else taxes. **ERR_CARRY** asks it to hold
+goods back, reusing the promised-cargo lock the contract board already has.
+
+Completion pays in **standing**, which is what the third branch runs on — a
+reward that compounds the mechanic rather than sitting beside it. Failure costs
+two steps of regard, and at −2 a hand gives notice and then walks at the next
+settlement. **The warning is the point**: losing the manoeuvre you have come to
+rely on should be something you saw coming and could have prevented.
+
+### Measured, with a hand forced aboard from the start
+
+| | result | target |
+|---|---:|---|
+| accepted | 81% | 40–80% |
+| completed | 48% | 45–75% |
+| walked out | 20% | 5–20% |
+
+Three of four in band. Offers ran at 1.24 per run before the rate was halved,
+and a hand asking twice in a run is a hand nagging.
+
+### The number that matters more
+
+Under **natural play**, only **7% of runs have a hand aboard at any point**. Of
+those, errands work: offered in 82%, accepted, completed 40%. So the errand
+machinery is sound and almost nobody sees it, because the convoy hires almost
+nobody — the same fact P2 recorded as unmet.
+
+Every criterion in this phase is gated behind hiring, and hiring is gated
+behind a crew price still derived from a coverage model the third branch made
+obsolete. That is P5, and it is now the only thing standing between the crew
+expansion and the player.
+
+## P3 — errands
+
+A personal favour from someone aboard, deliberately **not** a `Contract`. That
+structure is one-at-a-time, so an errand sharing it would disable the job board
+— the exact failure v4 spent a phase fixing — and its six fate counters would
+stop meaning anything.
+
+Two kinds. **ERR_VISIT** asks the convoy to stop at a settlement of a given
+trade before a sector: it costs no cargo, it costs *routing*, which is the
+resource the map contests and nothing else taxes. **ERR_CARRY** asks it to hold
+goods back, reusing the promised-cargo lock the contract board already has.
+
+Completion pays in **standing**, which is what the third branch runs on — a
+reward that compounds the mechanic rather than sitting beside it. Failure costs
+two steps of regard, and at −2 a hand gives notice and then walks at the next
+settlement. **The warning is the point**: losing the manoeuvre you have come to
+rely on should be something you saw coming and could have prevented.
+
+### Measured, with a hand forced aboard from the start
+
+| | result | target |
+|---|---:|---|
+| offered (runs) | 72% | 25–60% |
+| accepted | 86% | 40–80% |
+| completed | 43% | 45–75% |
+| walked out | 12% | 5–20% |
+
+Desertion is in band; the rest sit just outside it, and the offer rate is
+inflated by the measurement granting a hand from sector 0 — a hand that joins
+at sector 6 has half the settlements to be asked at.
+
+**A sixth stale-binary incident, and the worst of them.** A `sed` broke the
+offer condition, the build failed, the shell's `&&` chain stopped — and the
+analysis script then read a results file left over from the *previous* build
+and reported numbers with total confidence. The reduction being measured had
+never been applied. Caught only because the sanitizer run, which does not use
+`&&`, printed a compile error for a file the measurements had apparently just
+been taken from. **Read the file the measurement wrote, or delete it first:**
+these runs now `rm` their output before generating it.
+
+### The number that matters more
+
+Under **natural play**, only **7% of runs have a hand aboard at any point**. Of
+those, errands work: offered in 82%, accepted, completed 40%. So the errand
+machinery is sound and almost nobody sees it, because the convoy hires almost
+nobody — the same fact P2 recorded as unmet.
+
+Every criterion in this phase is gated behind hiring, and hiring is gated
+behind a crew price still derived from a coverage model the third branch made
+obsolete. That is P5, and it is now the only thing standing between the crew
+expansion and the player.
+
+---
+
+## Bugs found, and what found them
+
+| bug | symptom | found by |
+|---|---|---|
+| Provisioning deadlock | 0% win, bot pressed BUY forever | win rate collapse + STALLED |
+| Market round-trip exploit | 4,141 credits at sector 0 | bot doing what no human would |
+| Buy/sell threshold overlap | oscillated one good forever | STALLED with a step budget |
+| `roll_offers` stack overflow | segfault, no line number | **AddressSanitizer** — `tools/asan.sh` |
+| Unaffordable kit | no crash, no bad number | inspecting *what the bot spent* |
+
+The last row is the one to remember. Four of these announced themselves. The
+unaffordable garage did not: the win rate was a healthy 48% and every sweep was
+green. It surfaced only from asking a different question — not "did it win?" but
+"what did it actually do?"
+
+---
+
+# v5 — the people you pick up
+
+115,200 bytes (+4,608 over v4). 7.81% of the floppy.
+
+## The problem v4 recorded and refused to paper over
+
+Forced-policy A/B, each role granted **free** at run start (n=600, NORMAL):
+
+    MEDIC +4   TRADER -9   SCOUT -19   MECHANIC -20   GUARD -23
+
+Not a pricing fault. A role covered 3 of 14 encounter kinds against 3.7
+encounters per run, so a specialist's ability fired **0.79 times per run**.
+
+## The fix, and what it moved
+
+The ability now fires on *every* encounter as a third option, not on 3-in-14 of
+them. Same ability, same per-fire strength, 4.7x the presence.
+
+| role | v4 free | v5 free | delta |
+|---|---|---|---|
+| TRADER   |  -9 | **+18** | +27 |
+| SCOUT    | -19 | **+16** | +35 |
+| MECHANIC | -20 | **+11** | +31 |
+| MEDIC    |  +4 | **+11** |  +7 |
+| GUARD    | -23 |  **+8** | +31 |
+
+Every role clears the +8 bar set in the plan; none exceeds +45 (ECON is +42),
+so no hand has become a mandatory purchase.
+
+## Final gate, n=1000 per arm
+
+    d=0 EASY    won 661/1000   66%
+    d=1 NORMAL  won 473/1000   47%
+    d=2 HARD    won 301/1000   30%
+
+Zero stalls at any difficulty. Sanitizers clean. `-Z` determinism clean across
+all three difficulties. `-X` market round-trip: best trip nets +0 at price 1.
+
+## Replayability, measured
+
+Take rates per role (n=600, NORMAL): MECHANIC 15%, GUARD 5%, MEDIC 15%,
+SCOUT 16%, TRADER 14%. CREWSET entropy 1.09 bits of a theoretical 5.00.
+
+Policy divergence — 400 fixed seeds played under two encounter policies, then
+compared on final `crew[]`:
+
+    all seeds ............................ 17%
+    seeds where either policy hired ..... 100%   (68 seeds)
+
+**Both targets were missed on the headline and met on the mechanism.** Plan
+asked for >60% divergence and >=2.0 bits; got 17% and 1.09. But the conditional
+number is 100%: whenever the bot hires at all, the two policies end with
+different people aboard *every single time*. The shortfall is entirely the
+adoption rate — 17% of runs have a hand — not the discrimination.
+
+## The measurement that was nearly believed
+
+Late in P5, three consecutive sweeps returned crew counts identical **to the
+digit** (MECHANIC 9, GUARD 7, MEDIC 18, SCOUT 29, TRADER 17) after edits that
+should have moved them. That is the stale-binary signature this log has recorded
+five times before, so the sixth check was reflexive:
+
+    grep -n "if (hops < 3) return 0;" src/bot.c   -> present
+    ./build.sh                                    -> succeeded
+    md5sum build/convoy_headless                  -> unchanged across rebuild
+
+The binary was **not** stale. The edits were compiled in and genuinely changed
+nothing: the bot's `hops` gate was never the binding constraint. Having a
+false-positive pattern for an error makes you fast at spotting it and slow at
+disbelieving it. The md5 check is what separated "my tooling lied" from "my
+hypothesis was wrong", and only the second was true.
+
+The real constraint was `crew_value > price` — the bot's own model of a hand
+kept returning a number near the 10-credit floor and declining. Fixed by
+flooring the valuation at what the A/B measured rather than what the model
+derived:
+
+    // When a measurement and a model disagree by that margin the measurement
+    // wins: a hand carried for the rest of the route is worth about eight
+    // credits a hop, and the model is left in place to argue for MORE.
+    int floor_v = hops * 8;
+
+Runs with a hand aboard: 7% -> 17%. This is the fourth time in two releases that
+a number blamed on the game turned out to be the observer's arithmetic.
+
+---
+
+# v6 P0 / P0b — foundations, and a branch that was never taken
+
+## P0: the fifth stream, proved inert
+
+`rng_town` added; the v6 rule is that nothing in the town layer draws from any
+other stream. `Node` grew to carry a condition, a name and stock; `World` grew
+daylight, a service flag and four rumour slots. `world_node_known()` landed as
+the fog accessor, hiding nothing yet.
+
+**Inertness proof: 1,200 BOT lines (400 seeds x 3 difficulties), byte-identical
+to the v5 tag.** Sanitizers clean, `-Z` clean, `-X` clean. exe unchanged at
+115,200.
+
+The accessor lands three phases before the fog it will enforce, and it lives in
+`world.c` rather than `ui.c` on purpose: a rule enforced only where a panel is
+drawn is a rule the test bot never meets, and the bot is what every number here
+is made with. A fog added later to an accessor nobody calls is not a fog.
+
+## P0b: `base == 70`
+
+```c
+e->alt_pay_good = (base == 70) ? -1 : e->pay_good;
+e->alt_pay_qty  = (base == 70) ? 0  : 1;
+```
+
+`base` is only ever 80 (matched specialist) or 60 (improvised). **The test was
+never true.** Both tiers charged a unit, so the specialist's manoeuvre -- free
+by design, and described as free in three separate comments -- shipped in v5
+costing exactly what the improvised one did. The two tiers differed only in odds.
+
+70 was the number the branch carried in the v5 plan, before the odds were
+retuned to 80/60. Nothing failed when it drifted. **A condition that is merely
+never true throws no warning and breaks no test; it quietly deletes the
+feature.** The fix is a `matched` flag set where the tier is chosen, which
+cannot drift away from the thing it describes.
+
+### What it was worth: almost nothing
+
+| role | v5 (shipped) | P0b (as designed) |
+|---|---|---|
+| MECHANIC | +11 | +11 |
+| GUARD    |  +8 |  +8 |
+| MEDIC    | +11 | +12 |
+| SCOUT    | +16 | +16 |
+| TRADER   | +18 | +19 |
+
+n=600, NORMAL, baseline 48%. Two roles moved one point; three did not move at
+all. Both inside noise at this n.
+
+**Worth recording precisely because it is a null result.** The matched tier only
+fires on the 3-of-14 kinds a specialist covers, so waiving one unit reaches
+about a fifth of manoeuvres, and one unit is small against what the branch is
+worth. The bug was real, the design intent had genuinely never shipped, and
+correcting it changed the balance by nothing measurable.
+
+The v5 numbers were therefore never wrong -- they measured the binary as it
+actually behaved, and the published artifact's description ("cheap and it can
+fail") was true of both tiers. What had diverged was the intent and the
+comments, not the result.
+
+Branch mix after the fix (n=600, `-C 3`): alt offered 1,536, taken 23% of
+offers, failing 34% of attempts (bar 20-45%). Worst `forced%` 7% (bar <=9%).
+
+---
+
+# v6 P1 — finite stock
+
+The market was an infinite tap: a well would sell you thirty water if you could
+carry it, so an archetype was a price and nothing else, and one stop could
+assemble a whole cargo. Stock makes the archetype a quantity too.
+
+Derived from `ARCH_MOD`, never a second table — the most repeated bug in this
+project is two tables that must agree while only one gets edited (the two price
+tables removed in v4, `world_reachable` against `world_can_travel`, the water
+ration copied into the bot). A place that is cheap in a thing is cheap because
+it has the thing; one number says both.
+
+## It shipped as decoration, and the counter said so
+
+First parameterisation (`base = 7 - mod/12`, survival floor 4):
+
+    dry-shelf runs   6%    (bar: 10-40%)
+    buys blocked     0.00/run
+
+**The floor was the binding number, not the formula.** The worst import base was
+`7 - 38/12 = 4`, the noise band ran 2..5, and the clamp lifted nearly all of it
+straight back to 4 — erasing the archetype gradient at exactly the end where it
+needed to bite.
+
+Split per good on the failing build, n=400:
+
+| good | exhaustions/run | runs with any |
+|---|---|---|
+| water |  0.025 |  9 |
+| fuel  |  0.028 | 10 |
+| ammo  |  0.000 | **0** |
+| meds  |  0.000 | **0** |
+| scrap |  0.013 |  5 |
+
+Ammo and meds never ran dry in 400 runs. The reason is structural: the bot buys
+in bulk only through speculation, speculation targets the local speciality, and
+**the speciality is the deepest shelf by construction**. The limit had been put
+exactly where nobody was buying. Every exhaustion that did happen was a survival
+good at a place that does not make it.
+
+So the lever is the import end of the gradient, not the whole curve: steepen it
+and the survival shelves thin while the speciality nobody exhausts deepens.
+
+## Seven parameterisations
+
+| divisor | floor | dry-shelf | win 0/1/2 | stalls | thirst share |
+|---|---|---|---|---|---|
+| /12 | 4 |  6.0% | 68/50/32 | 0 | 70.9% |
+| /12 | 3 | 10.0% | 68/50/32 | 0 | 70.9% |
+| /6  | 3 | 16.2% | 68/50/32 | 0 | 70.9% |
+| /6  | 2 | 32.5% | 67/50/33 | 0 | 70.9% |
+| /9  | 2 | 17.2% | 68/50/32 | 0 | 70.9% |
+| **/8** | **2** | **21.5%** | **68/50/32** | 0 | **70.9%** |
+| /8  | 1 | 25.2% | 68/50/32 | 0 | 71.1% |
+
+Floor 1 also lands in band and measured no harm, and was rejected anyway: it
+makes a settlement that sells one unit of water a legal stop, which voids the
+guarantee the clamp exists to give. Rejected on the comment's own terms rather
+than on a number.
+
+## Shipped: `/8`, floor 2
+
+    dry-shelf runs        21.5%    (bar 10-40%)
+    stalls                    0    all three difficulties
+    win rates          68/50/32    (v5: 66/47/30)
+    thirst share of deaths 70.9%   (+0.0 points)
+    bought per run        11.61    (was 11.56 -- nothing became unbuyable)
+    biggest stack sold     1.76    (v5: 2.6)
+
+`-X` clean, sanitizers clean, `-Z` clean at all three difficulties. n=1200
+stability check: 20.9% dry-shelf, and 25.2 / 21.5 / 19.8% per difficulty — the
+whole band sits inside 10-40 at every setting.
+
+Win rates run 2-3 points above the 66/47/30 contract. Banked deliberately and
+retuned in P7: tuning against an economy that is still moving tunes noise.
+
+## A counter that measures its own guard
+
+`sblock` (buys refused for want of stock) reads 0.00/run at every
+parameterisation, and will keep doing so. The bot's `world_stock` guards mean it
+never presses BUY at an empty shelf, so that counter measures the guard, not the
+constraint. `sout` is the honest metric. Recording this so nobody later reads a
+zero there as evidence the mechanic is inert.
+
+## Suspicious result, checked rather than assumed
+
+NORMAL win/death counts came back identical (201/141/58) across five variants.
+That is the stale-binary signature this log has recorded six times. It was
+genuine cancellation: md5sums differ per variant, 103 of 400 run lines differ
+between two of them, and exactly two seeds flip outcome in opposite directions
+(seed 50 THIRST->WON, seed 361 WON->THIRST).
+
+## The frozen agent was edited
+
+`bot_ref.c` took three `world_stock` guards. An agent that presses BUY at an
+empty stall runs to the step cap and stalls, and a frozen reference that cannot
+finish a run measures nothing. Recorded because an unexplained edit to a control
+is worse than no control — and note the consequence: **`-A ref` is not a valid
+control for P1 itself**, only for the phases after it. Both arms had to change
+for either to run.
+
+## UI, and two collisions found by looking
+
+Stock draws as a six-pip depth bar per market row. Theirs is a bar, yours is a
+number: a player reads "how much is left here" positionally and "how much do I
+have" numerically, and never has to work out which column is which.
+
+First attempt put the bar at `pw-104`, reasoning that the selected row's inline
+BUY/SELL keys ended near x+320. **They do not** — the screenshot showed the pips
+drawn straight through SELL and the sell price. Moved to x+72, between the name
+and the price, where the gap is real and measurable.
+
+Screenshotting that then exposed a second, older collision on the crew tab:
+`T_CREW_WARN` was drawn at a fixed `y + 44 + th + 82` while the aboard-roster
+above it grows a line per hand — so any convoy carrying anyone had the roster
+drawn through the water-ration warning. The garage branch beside it has always
+used `draw_outfit`'s returned bottom. This one was written with a constant that
+happened to be right for an empty crew, which was the only crew there was when
+it was written. Now takes the returned y.
+
+Both found by looking at the picture. Neither would have been found by reading
+the arithmetic, which is what the arithmetic said was fine.
+
+---
+
+# v6 P2a — names, and a fog that is actually wired in
+
+## Names
+
+One byte per node indexes two 16-word tables, so 32 strings give 256 places for
+about 320 bytes. The heading is now the town; the archetype is demoted to the
+line beneath it. Every well in a run used to be called WELL.
+
+Rolled unconditionally from `rng_town` at world-gen, whether or not anything
+ever draws it — a stream whose draw count depends on the map is a stream that
+reshuffles itself when the map changes.
+
+## Fog
+
+`world_node_known` now zeroes `cond`, `stock[]` and `price[]` for unvisited
+nodes. Type, archetype, links and name survive, because all four are drawn on
+the map — and a name survives on purpose: it is not information, it is what a
+rumour will point at. "SALT CROSSING IS DRY" is a sentence; "the node at 7/2 is
+dry" is a spreadsheet.
+
+It writes into the caller's view and never into the stored Node, so `state_hash`
+does not move. The fog is the player's, not the simulation's.
+
+## The finding that mattered: the accessor had no callers
+
+An audit of all 19 foreign-node access sites found that **nothing anywhere reads
+a foreign node's price, stock or condition** — every such read is pinned to
+`w->node[w->sector][w->index]`. So fog was behaviourally inert.
+
+And it would have stayed inert, because `world_node_known` **had zero callers**.
+A clean zero-delta comparison would have proved nothing at all: it would have
+said the accessor was not load-bearing, not that the fog was correctly scoped.
+Exactly the shape of the stock result one phase earlier, where a mechanic
+shipped and measured as if it were working.
+
+The audit named the site to fix: `score_node(const World *, const Node *)` takes
+a bare pointer, "the signature most likely to bypass a future accessor, since
+the pointer is laundered through a parameter." It now takes a `const NodeView *`
+and both call sites go through `world_node_known`. A comment cannot enforce
+that rule; a parameter type can. The fields are simply not there to read.
+
+This is the same lesson as facts-not-valuations, and it was learned the same
+way: by noticing a test that could only pass.
+
+## Negative control, because a zero delta proves nothing on its own
+
+    fog price/stock/cond          d=1  50%   (unchanged)
+    ALSO fog archetype            d=1  47%   <-- control
+    restored                      d=1  50%
+
+Fogging archetype costs `score_node` its two +26 survival terms and moves the
+win rate three points. The accessor is therefore genuinely in the decision path,
+and the zero delta above is the bot legitimately not using what was hidden.
+
+## Gate
+
+    win rates      68/50/32   (P1: 68/50/32 — presentation leaked nothing)
+    stalls                0
+    -X, ASan/UBSan, -Z    clean at all three difficulties
+
+## Three layout collisions, all found by looking
+
+1. The stock pip bar drawn through SELL and the sell price.
+2. Older, and not from this release: `T_CREW_WARN` at a fixed `+82` while the
+   aboard-roster above it grows a line per hand, so any convoy carrying anyone
+   had the roster drawn through the water warning. The garage branch beside it
+   has always used `draw_outfit`'s returned bottom.
+3. `FAR CROSSING` at scale 2 drawn through the `PRICE` column heading. That
+   heading sat at `y+14` and was clear of the old archetype heading, which was
+   at most ten characters; a town name runs to fourteen. Anchoring the headings
+   to the rows they label then put them under the selected row's highlight,
+   because there were only four pixels between the tab strip and the first row.
+   So the row block moved down 14px and the panel grew to match — otherwise
+   DEPART was drawn on the desert.
+
+Three collisions, three screenshots. None would have been found by reading the
+arithmetic, which in every case said the layout was fine.
+
+## Still open in P2
+
+The location strip — folding the tabs into five town locations, moving the
+journal to the right column, and the strip-width assertion — is not done.
+
+---
+
+# v6 P2b — the tab strip becomes the town
+
+MARKET / GARAGE / CREW / CONTRACTS were menus. They are now places: STALLS,
+the works, ROOM, BOARD. The works is named per archetype — a refinery's is THE
+STILLS, a clinic's THE WARD, a scrapyard's BREAKERS — because "the local
+mechanic has something out front" is better writing than GARAGE and it costs
+one table.
+
+Reused `ui_tab_live` rather than building a second navigation layer. That
+function already encodes "this place exists only when it has something in it",
+which is exactly the requirement, and `cycle_tab` already skips dead entries.
+A nested layer would also have multiplied the one failure this codebase already
+shipped from a binding with no affordance.
+
+## The strip is measured, not promised
+
+`draw_tabs` reports the width it actually drew and the sweep fails on overrun:
+
+    STRIP worst=296 limit=360 ok
+
+64px of headroom. That is a fact worth having before P4 rather than after: the
+situation tab must be **8 characters or fewer** (SIEGE, DRY, BOOM, CARTEL fit;
+QUARANTINE and ABANDONED do not). The worst case depends on which archetype and
+condition a seed rolled, so it is not something anybody could read off the
+string table — which is precisely why it is asserted rather than eyeballed.
+
+## Gate
+
+    win rates   68/50/32   unchanged from P2a and P1
+    stalls             0
+    STRIP             ok
+
+## Still open
+
+The journal has not yet moved out of the strip to the right column, so the
+fifth slot for the situation is not free yet. That, and the `-J` reachability
+assertion that must be replaced rather than deleted when it does.
+
+---
+
+# v6 P2c — a detector for the collisions, and what it found
+
+Three layout collisions were found in this release by a person looking at a
+screenshot, and none by reading the code. That does not scale, so the harness
+now finds them.
+
+## The detector
+
+`draw_text`, `draw_number` and `draw_key` record a bounding box per call, and a
+new `-Y` flag fails any frame where two text boxes intersect. Harness-only —
+the shipped exe is byte-identical and carries none of it.
+
+Text-on-text only. `fill_rect`, `draw_rect`, `draw_panel`, `fill_scrim` and
+icons are never recorded, because drawing text on a panel or a selection
+highlight is correct and a detector that cries about it would be turned off
+within a day.
+
+Four geometry decisions that decide whether it is useful or noise:
+
+- The box is the **ink**, not the cell — the font occupies rows 1..6 of an
+  8-row cell, so a full-cell box would flag every pair of 15px-pitch lines at
+  scale 2.
+- `draw_text` tracks the first and last *inked* glyph, so leading and trailing
+  spaces cannot collide.
+- Rectangles are half-open with a full trailing advance, so the ubiquitous
+  `tx += draw_text(...)` idiom touches without colliding.
+- One exemption: identical string, identical size, within 4px is a drop shadow,
+  which is how the title is drawn. Nothing else is excused.
+
+`-Y` refuses `-Q`: the quick sweep shrinks the logical framebuffer to 32x32 and
+clips almost everything away, so a probe run under it would see nothing and
+report success.
+
+## Proof it can fail
+
+A detector that cannot fail is worth nothing, and this codebase has paid for
+that twice. Before trusting a clean result: a positive control (two strings 6px
+apart) was reported; two negative controls (edge-to-edge on one line, and 15px
+apart on adjacent lines) were not. Controls removed, binary rebuilt, and the
+400-line BOT diff taken after removal.
+
+## What it found: 43 collisions in 100 seeds, two real bugs
+
+**A. Arrival notices printed through the archetype line.** `kit_failed` and
+`job_paid` drew at `y+32`; the archetype line is at `y+30`. Six pixels of ink
+each, two pixels apart — a red-on-grey mush. 41 of the 43 reports.
+
+Nobody caught this in a screenshot because it needs the right seed **and** the
+right step: kit has to fail, or a job pay out, on the exact frame photographed.
+Moved to the title line, right-aligned, where the space actually is.
+
+**B. The errand's keycaps on the DEPART keycap.** Mine, introduced two edits
+earlier — `draw_errand` hung off the roster while the depart row sits at a fixed
+offset. That is the same fixed-offset-against-a-growing-list fault the crew
+warning in the same branch had just been fixed for, reintroduced by stacking a
+three-line block on the same anchor.
+
+Fixed in two steps, and the first was wrong:
+
+1. Pinned the warning above the depart row instead — which only moved the
+   collision, because the errand's 22px keycaps then landed on the warning.
+2. The two now take turns, and the errand is clamped so it cannot reach the
+   depart row. The warning explains what a hand costs before you take one; once
+   somebody is aboard and asking a favour, the favour is what the screen is for.
+
+## The number that matters most here
+
+After the turn-taking fix, **`-Y -N 100 -D 1` reported zero**. Widening to
+n=200 across all three difficulties found the clamp was still missing:
+`<KEY Z>` x `<KEY ENTER>` at EASY and HARD, and nothing at NORMAL.
+
+A hundred seeds at one difficulty said the layout was correct. It was not. The
+sample was the thing that was wrong, which is the same lesson as every
+attribution failure in this log, arriving from a new direction.
+
+    -Y -N 200, all three difficulties:  0 collisions
+    win rates 68/50/32 unchanged, ASan clean, -X clean, STRIP ok
+
+---
+
+# v6 P2d — the journal becomes the watchlist
+
+The journal left the tab strip for the right column. It was never a location:
+it has no selectable row and you do not walk to it, and it was holding one of
+five slots in a strip that now names places. The fifth slot is free for P4's
+situation.
+
+It also stopped being a stat. "REGARD GOOD" is a number with a label; the
+watchlist states the gate as a plan:
+
+    PEOPLE
+    VULTURE      WOULD DRIVE FOR YOU
+    OKONJO       WANTS NOTHING TO DO
+    THE WALKER   WOULD DRIVE FOR YOU
+
+Specified in v5 and not built. It asks `world_can_recruit` rather than
+restating the rule, because a second copy of a gate is how this project has
+repeatedly ended up with two answers to one question.
+
+Drawn at every stop rather than behind a tab the player had to remember.
+
+## The assertion was replaced, not deleted
+
+`-J` used to press RIGHT until the journal tab appeared and fail if it never
+did. With the journal out of the strip that question no longer has an answer —
+and deleting the check because the thing it guarded moved is exactly how the
+next unreachable screen gets missed. It was the only reason the last one was
+caught.
+
+It now asks the question that still means something: did the watchlist actually
+draw for a convoy that has met somebody? Same failure, new location.
+
+## First version was unreadable
+
+Drawn straight onto the sky with no panel, the coloured standing lines — the
+entire point of the block — were illegible against a sunset. Panel added, sized
+to the people actually met so it never leaves an empty box on screen.
+
+## Gate
+
+    -Y overlap sweep, n=150 x 3 difficulties   0
+    win rates                          68/50/32   unchanged
+    watchlist assertion                    pass
+    ASan/UBSan                            clean
+
+---
+
+# v6 P3 — a verb only this town has
+
+Five services, one per archetype, in the archetype's own location. GENERAL has
+none: it is the baseline the specialists are read against, the same job its
+all-zeros row in `ARCH_MOD` does for prices.
+
+    WELL       three water, whatever the shelf says
+    REFINERY   two scrap becomes two fuel
+    CLINIC     squares you with whoever is closest to leaving
+    SCRAPYARD  list price for metal, or a broken fitting put right
+    ARMOURY    guns at your back for four hops
+
+Two of them exist to give an existing mechanic the counterplay it never had.
+Salvaged kit failing was a pure loss with no recourse. The desertion warning
+was a warning about something a player could do nothing about, which is an
+announcement, not a warning.
+
+## The A/B was measuring the wrong thing
+
+Granted free, the five came back **+2 +2 +1 +0 +0** against a >= +4 bar. That
+reading is wrong, and the baseline says why: NORMAL was 50% before this phase
+and 68% after. **Services were worth +18 points in aggregate** while each one
+granted free measured near zero.
+
+The forced-policy A/B measures *marginal* value on top of what the bot already
+does — and the bot was already taking a service in 91% of runs. For crew and
+kit, which it rarely bought, granting one free measured the design. Here it
+measured nothing, because the thing was already being had.
+
+The clinic makes the point exactly. Unconditionally it is **+0, used in 6% of
+runs** — apparently furniture. Measured on convoys that have a hand aboard, the
+population the service is *for*:
+
+    with a hand aboard:  baseline 58%   clinic granted 64%   +6
+    clinic used in 54% of runs with a hand aboard
+
+Same service, same build. The first reading averaged over 83% of runs with
+nobody to treat.
+
+## Retuned, because +18 is a difficulty setting
+
+Water kills seven of every ten convoys, so a cheap reliable source of it is not
+a service. First cut charged 1.5x list for four water and turned two scrap into
+three fuel: a 2.7x and a 1.75x return on the two goods that decide whether a run
+ends.
+
+    /                       well    refinery   d=0/d=1/d=2
+    first cut               1.5x, 4 water   3 fuel    71/68/36
+    weakened                2.5x, 3 water   2 fuel    71/58/36
+    shipped                 3.5x, 3 water   2 fuel    68/52/32
+
+Against 68/50/32 before the phase: **+0/+2/+0**, inside the +6 budget. Banked
+for P7 rather than retuned here.
+
+## Usage
+
+    WELL       56% of runs        REFINERY   51%
+    SCRAPYARD  48%                ARMOURY    12%
+    CLINIC      6% (54% of runs with a hand aboard)
+    any service used in 93% of runs
+
+The scrapyard started at **0.03 uses per run** — furniture by this project's
+own standard, because a refit needs something to have broken first. It gained a
+second mode: when nothing is broken they pay list for metal, with no 20%
+spread. That is a reason to route there that does not depend on bad luck having
+already happened. 0.03 -> 0.62.
+
+`ARMOURY` at 12% is the one below the band and is left there. Extending the
+escort from three hops to four moved it not at all, so the limit is the bot's
+valuation, not the duration — and the A/B says the escort is worth +1. A low
+take rate for a low-value option is an accurate reading, not a bug to tune away.
+
+## Seven collisions from two blocks
+
+The overlap probe was worth the phase on its own. The service line alone
+collided with, in order: the payback line (fixed by anchoring to a returned
+bottom), DEPART (fixed by clamping), the road-ahead line (the clamp pushed it
+up), the fitted list (the clamp again), and the payback line a second time
+(advanced by text height when the keycap is 22px tall).
+
+Five positions, five collisions. That is the layout saying the block does not
+fit, not that it needs a better offset. The fixes that held were structural:
+
+- **The road east moved to the right column.** It is route information, not
+  forecourt information, and the forecourt column had more in it than it had
+  height. Better home on the merits as well as the only one with space.
+- **The service became the headline**, above the fitted list rather than below
+  it. Everything else in that column grows; a fixed block underneath a growing
+  one must be clamped, and the clamp is what drove it into four different
+  things. Nothing grows above the top of a panel.
+- **The errand did the same** on the ROOM tab, for the same reason.
+- **`draw_outfit`'s roster is now bounded.** It is the growing thing everything
+  else was being clamped away from. With a full crew and a favour on the table
+  it ran through the depart row — **two frames in 750 seeds**, a margin no
+  screenshot would ever have caught.
+
+Final: **0 overlaps across 900 seeds x 3 difficulties.**
+
+## Gate
+
+    win rates       68/52/32   (pre-P3 68/50/32)
+    stalls                 0
+    overlaps               0   n=300 x 3
+    STRIP        240 / 360
+    -X, ASan/UBSan, -Z  clean
+
+---
+
+# v6 P5 — word of the road, and the number it did not reach
+
+Rumours ship. They are generated from `rng_town`, held four at a time on the
+World in FIFO order, expire the moment their sector is behind you, and are
+shown in the right column with the teller's face and how sure they sounded.
+
+Confidence is honest and stated in words, never a number:
+
+    SWEARS TO IT   conf >= 70
+    HEARD IT SAID  45-69
+    RECKONS        < 45
+
+`conf` is v5's regard finally reading its full range: 40 for a stranger, +15 if
+they are aboard, +/- 8 per point of regard, +20 if the subject is their business
+(a scout on roads, a trader on prices), -12 two sectors out. **The claim may
+lie; the confidence never does.** A game that misrepresents how well it knows
+something teaches a player to discard all of its information, true parts
+included.
+
+Falsehood shares the distribution of truth: the slot is chosen first — which
+node, which kind of claim — and only then is the argument picked to make the
+claim hold or fail against the real node. Generated any other way, lies acquire
+a shape, and a player who learns the shape has a perfect oracle with extra steps.
+
+## The exit criterion was not met, and that is the result
+
+The bar set in advance: **a perfect oracle must be worth >= +8 points**, or the
+claims carry nothing actionable.
+
+    every rumour forced TRUE      39%
+    honest                        39%
+    every rumour forced FALSE     38%
+    bot ignores rumours entirely  40%
+
+**Zero.** And acting on the information measured one point *worse* than
+ignoring it.
+
+The `-I` flag was verified rather than assumed — it forces 100% true and 0%
+true exactly, on 253 rumours across 120 seeds — so this is not a dead switch.
+Three separate claim sets were tried:
+
+| claim set | oracle value |
+|---|---|
+| uniform over price / stock / condition / road | 0 |
+| biased 70% toward water and fuel | 0 |
+| biased toward what the map does *not* imply | 0 |
+
+## Why: it is the map, not the claims
+
+The first two failures were mine, and the second one is embarrassing in a
+specific way. This file's own design note says *"a rumour may only claim what
+the fog hides"* — and then price and stock claims were drawn as often as any
+other. But the archetype is drawn on the map, a well **is** where water is
+cheap, and `score_node` already prefers a well when the tank is low. Telling
+anybody that water is cheap at the well is the map read aloud. I wrote the rule
+and then broke it in the same function.
+
+Reweighting to the genuinely hidden claims — a well gone dry, which trouble sits
+on an encounter node — did not move the number either, and that is the real
+finding:
+
+**A hop offers two or three nodes in the next sector and they are near enough
+interchangeable that knowing more about one cannot pay.**
+
+This is v5's crew problem wearing a different hat. There, an ability that fired
+0.79 times a run could not matter however strong it was. Here, a choice between
+near-identical options cannot be informed however good the information is. Both
+are cases of a mechanic being structurally unable to reach the outcome, and in
+both the instinct is to tune the mechanic when the fault is in what surrounds it.
+
+Fixing it means making sectors differ — a change to route generation, not to
+rumours. That is not this phase's to make, and it is written down here rather
+than tuned at until a number appeared.
+
+## What shipped
+
+The bot no longer routes on rumours; `rumour_bonus` is kept, unused, with the
+measurements in a comment above it so the next attempt starts from the evidence
+rather than from scratch. The rumours themselves stay: they are ~1.5KB of
+strings, they put a face and a standing on the road ahead, and they are the
+third system in which regard does real work. What they are not, by measurement,
+is a mechanical advantage — and that is recorded rather than implied.
+
+## Five more collisions
+
+The overlap probe found the arrival notices in three successive homes: through
+the archetype line at y+32, through the town name when right-aligned on the
+title line (a name runs to fourteen characters at double scale), and through the
+archetype line again when stacked. **Twenty-four frames in four hundred seeds at
+one difficulty and none at the other two.** The panel has no room; they now live
+in the right column, which is what that column is for.
+
+    -Y overlap sweep, n=200 x 3 difficulties   0
+    ASan/UBSan, -X, -Z                     clean
+
+---
+
+# v6 P4 — a situation to walk into
+
+Six conditions, rolled at world-gen from `rng_town`, on about half of
+settlements: SIEGE, SICK, BOOM, EMPTY, CARTEL, DRY. Each bends stock and price,
+and each offers one choice in its own location.
+
+Names are eight characters because the strip gate said so. QUARANTINE and
+ABANDONED were the first two and neither fits a five-location strip.
+
+**Condition modifiers apply before the water/fuel floor**, which is why COND_DRY
+moves price and not stock: reversed, a dry town takes water to zero underneath
+the clamp and starves runs to death while reading as a difficulty result.
+
+## The choice is an Event
+
+Not a parallel resolution path. Routing it through `world_accept` /
+`world_decline` / `world_attempt` buys the v5 third branch, the two-reason split
+in `world_accept_block`, the whole encounter panel, the fate counters, and the
+bot's `decide_event` — which is written so a fifteenth kind needs no change in
+it. A separate path would have needed every one of those rebuilt and would have
+given the harness nothing to read.
+
+## Two calibration passes and 30 parameterisations
+
+First cut: **84/74/62** against 68/52/32. Roughly six situations a run each
+paying 30-55 credits is an income stream, not a dilemma. Second cut overshot to
+**56/41/23**. A subagent then swept thirty parameterisations at n=400 and
+re-ran the finalists at n=1500-3000, because n=400 is +/-2.5 points at 1 sigma
+and several early conclusions were noise.
+
+Shipped: SIEGE 2 ammo -> 20+ credits, refuse 1 water; SICK 1 meds -> 8+, refuse
+2 water; BOOM 1 fuel -> 26+, refuse 2 random; EMPTY 1 fuel -> 1 meds, refuse
+nothing; CARTEL 1 ammo -> 12, refuse 2 random; DRY 2 water -> 70+, refuse 1
+random.
+
+## The instrument was broken, and that is the finding
+
+`world_situation_enter` never incremented `ev_fired[kind]`, but `world_accept`
+and `world_decline` increment `ev_accepted` and `ev_forced` regardless of where
+an encounter came from. So `-K` was dividing situation outcomes by the
+random-encounter count alone and reporting **accept 312%, refuse -212%**.
+
+A percentage over a hundred is the instrument saying it is broken. The danger is
+the ones that stay under a hundred and look like results. Fixed with one line —
+a situation is a firing of its kind, because that is what it is.
+
+## A regression the repaired instrument then found
+
+With `-K` trustworthy again, against v5 on the same seeds:
+
+    kind      v5    v6 (before fix)   after fix
+    WRECK    14%          53%            20%
+    BREAK     6%          37%             7%
+    LEAK      7%          34%             5%
+
+All three are priced in scrap or fuel — exactly what the refinery and scrapyard
+services consume. **The services were eating the goods the encounters demand.**
+The convoy cashed in its metal and then met a breakdown it could not pay for.
+
+A service that makes a later encounter unaffordable has not sold the player
+anything; it has moved a cost somewhere they cannot see it. Services now refuse
+to take a good below its survival reserve, and the scrapyard never buys the last
+three scrap.
+
+Two of the three are back to v5 levels. The rises that remain -- SICK 7% -> 17%,
+TOLL 6% -> 13% -- are on the kinds the situations reuse, which is expected and
+recorded rather than hidden.
+
+## Where it landed, and what could not be reached
+
+    n=800:  62 / 46 / 34        contract 66 / 47 / 30
+
+NORMAL is one point out. The EASY-HARD spread is 28 where the contract has 36,
+and across thirty parameterisations the spread never exceeded 31 — it shrinks as
+the overall level rises. Every lever inside `world_situation_enter` is uniform
+or HARD-favouring.
+
+The reading is that the condition price and stock distortions compress the
+difficulty spread on their own, so the pre-situation spread is not restorable
+from the situation economy alone. That is a job for the difficulty table in P7,
+which is where it belongs.
+
+**SICK could not be de-forced**, and it is stated rather than papered over: 24%
+of the time the convoy has no meds. The only fix is to stop charging in meds,
+which contradicts the flavour and removes one of the two drains holding HARD
+down. In mitigation the random `EV_PLAGUE` already forces at a similar rate, so
+the situation is no more optionless than the kind it reuses.
+
+    stalls 0 · overlaps 0 · ASan/-X/-Z clean
+
+---
+
+# v6 P6/P7 — retune, and what the final gate found
+
+## Difficulty restored
+
+The condition price and stock distortions compressed the spread, so the table
+was widened at both ends rather than the situations being tuned further:
+
+    EASY   131 cr, 9 water, 6 fuel, spoil 26, storm 12, settle 47
+    NORMAL 123 cr, 8 water, 5 fuel  (barely moved)
+    HARD   107 cr, 7 water, 5 fuel, spoil 47, storm 23, settle 36
+
+    n=1000:  65 / 48 / 29        contract 66 / 47 / 30
+
+One point out at each difficulty, inside noise at this n. Water is the sharpest
+lever in the table: a single unit at EASY moved it nine points, which is worth
+knowing before anyone reaches for it again.
+
+## The gate found a regression nobody caused on purpose
+
+v5 left every crew role worth +8 to +18 granted free. Re-run at the end of v6:
+
+    role       v5    v6
+    MECHANIC  +11    +3     <-- under the bar v5 set
+    GUARD      +8   +11
+    MEDIC     +12   +11
+    SCOUT     +16   +15
+    TRADER    +19   +13
+
+**Nothing was done to the mechanic. The services were.** A scrapyard that puts a
+broken fitting right does the mechanic's job, and a refinery that turns scrap
+into fuel eases the same shortage a mechanic eases. Between them they made the
+role largely redundant without anyone deciding to.
+
+The scrapyard now does the work free when the mechanic is aboard, so the two
+are complementary rather than substitutes. That is right on its own terms and it
+**recovered nothing measurable** — the overlap was never mainly about repairs,
+it is the whole service set easing the scrap and fuel economy the mechanic
+exists to ease.
+
+Shipped recorded rather than fixed, in the same way v4 shipped with crew
+recorded as broken rather than quietly rebalanced. The honest version of "we
+added shops" is that adding shops can cost you a character.
+
+## Final gate
+
+    n=1000 per arm      65 / 48 / 29     stalls 0
+    overlaps            0                n=150 x 3
+    STRIP               240 / 360
+    -X exploit          clean
+    ASan / UBSan        clean
+    -Z determinism      clean x 3
+    size                123,904 bytes    8.40% of the floppy
+
+    rumours    2.20/run     situations 4.44/run
+    services   1.20/run     dry shelf  30% of runs
+
+## The screenshot pass, and a tool that was destroying its own runs
+
+The P7 checklist called for a photograph of every location. Doing it found that
+`-S n` retried on every trade frame for as long as the shot was outstanding,
+pressing RIGHT ten times a go. On a seed where the wanted location never opens
+-- a town with no situation, a convoy with no crew -- that burned the whole
+4,000-step budget and the run ended at the cap having photographed nothing.
+
+Not a stall in the game, and the sweeps never saw it because sweeps do not pass
+`-S`. Worse than a stall, in a way: it looks like a screenshot that did not
+happen rather than a run that did not finish. Bounded to 40 attempts.
+
+All five locations then photographed and looked at:
+
+    STALLS      the market, with stock as a depth bar per row
+    FORECOURT   the works, named per archetype, service as its headline
+    ROOM        hiring, and a favour being asked
+    BOARD       contracts
+    EMPTY       the situation, named for the condition
+
+## README
+
+Still said "Version 4" and still listed the tab strip as "market, garage, crew,
+contracts, people" -- none of which exist. Brought current, including the two
+findings recorded rather than fixed, so a reader meets them in the README rather
+than discovering them in a sweep.
+
+## The mechanic regression, fixed rather than shipped
+
+Recorded above as a known regression. Reopened, because a regression this
+release caused is this release's to fix.
+
+The diagnosis in that note was half wrong. The mechanic already prevents
+salvaged kit from failing -- `salvage_check` returns early with one aboard --
+so the shops never duplicated the role's job. What they did was make **not**
+having a mechanic cheap to recover from: a scrapyard puts the broken fitting
+right for a handful of scrap, so the disaster the mechanic prevents stopped
+being a disaster.
+
+Two ways to fix that. Repricing the yard would have restored the number by
+making a service used in half of all runs worse. Instead the mechanic gained an
+upside no shop can sell: they can tell what a salvaged fitting is actually worth
+and haggle it down 40%. The yard still sells the cure; the mechanic turns cheap
+risky salvage from a gamble into a strategy. Prevention and cure, rather than
+two answers to one question.
+
+    role       v5    v6 gate   shipped
+    MECHANIC  +11      +3       +10
+    GUARD      +8     +11       +11
+    MEDIC     +12     +11       +11
+    SCOUT     +16     +15       +15
+    TRADER    +19     +13       +13
+
+All five back over the +8 bar v5 set. Win rates unmoved at 65/48/29, n=1000.
+
+One recorded-not-fixed finding remains, and it stays recorded: word of the road
+carries no mechanical advantage, because the map's per-sector choices are too
+alike for information about them to pay. That one needs route generation to
+change, which is a different release.
+
+---
+
+# Post-v6 note: the recorded diagnosis was wrong
+
+v6 shipped word of the road as carrying no mechanical advantage, with a stated
+cause: *"a hop offers two or three near-interchangeable nodes, so knowing more
+about one cannot pay"*, and a stated fix: *"make sectors differ, which is route
+generation and not this phase's to change."*
+
+That claim was never tested. It has now been, in a scratch tree, by forcing no
+two settlements in a sector to share a trade:
+
+    v6 shipped        true 39%   honest 39%   false 38%   oracle 0
+    diverse sectors   true 48%   honest 48%   false 48%   oracle 0
+
+**The oracle is still worth nothing.** The diagnosis was wrong.
+
+Note also what did move: forcing archetype diversity raised the win rate nine
+points on its own. Sectors offering different trades is worth a great deal --
+just not to the rumour system.
+
+The better reading, and the one a v7 should start from: **archetype is already
+visible on the map, so making it more varied hands the bot more information it
+can already see.** The things rumours actually hide -- condition, stock,
+price -- appear to have small effect on whether a run ends well, compared with
+the things the map draws. Information is only worth what the thing it describes
+is worth, and the fog covers the cheap half of the world.
+
+Two candidate directions, both testable before anything is built:
+
+1. Measure what the hidden variables are worth at all. If knowing every
+   condition in advance is worth two points, no rumour system can be worth more
+   than two points, and that ceiling should be established before designing one.
+2. Move something expensive behind the fog rather than making the cheap things
+   more varied.
+
+Recorded rather than acted on, because it is a v7 question and v6 is tagged. The
+value here is that the next attempt no longer starts from a false premise --
+which was exactly why the unused scoring function was kept in the source with
+its measurements attached.

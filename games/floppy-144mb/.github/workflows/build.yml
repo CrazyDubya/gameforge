@@ -1,0 +1,333 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The Windows job builds with ONLY_WIN=1, which skips the harness entirely --
+  # so for three releases neither the test bot nor the headless platform layer
+  # was ever compiled by CI. The measurement layer could have been deleted and
+  # every run would still have gone green. This job compiles them, runs the
+  # sanitizers, and plays the game to completion.
+  harness:
+    name: build harness, sanitize and play
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          set -e
+          ver=0.16.0
+          url="https://ziglang.org/download/$ver/zig-x86_64-linux-$ver.tar.xz"
+          echo "downloading $url"
+          curl -fsSL "$url" -o /tmp/zig.tar.xz
+          mkdir -p /tmp/zig && tar -xJf /tmp/zig.tar.xz -C /tmp/zig --strip-components=1
+          echo /tmp/zig >> "$GITHUB_PATH"
+
+      - name: Verify Zig
+        shell: bash
+        run: zig version
+
+      # No ONLY_WIN here: this is the point of the job.
+      - name: Build every game with its harness
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          for f in */build.sh; do
+            d=$(dirname "$f")
+            echo "::group::build $d"
+            ( cd "$d" && ZIG=zig bash build.sh )
+            echo "::endgroup::"
+          done
+
+      - name: Sanitizers
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          for f in */tools/asan.sh; do
+            d=$(dirname "$(dirname "$f")")
+            echo "::group::asan $d"
+            ( cd "$d" && bash tools/asan.sh )
+            echo "::endgroup::"
+          done
+          for d in deepscan switchyard last-light microcolony ten-paces; do
+            echo "::group::asan $d"
+            gcc -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+              -o "/tmp/$d-asan" "$d/src/platform.c" "$d/src/game.c"
+            ASAN_OPTIONS=detect_leaks=0 "/tmp/$d-asan"
+            ASAN_OPTIONS=detect_leaks=0 "/tmp/$d-asan" -F -N 20 -t 3000
+            echo "::endgroup::"
+          done
+
+      # A build that links but cannot finish a run is not a passing build.
+      # Every difficulty, so a change that breaks one mode cannot hide.
+      - name: Play to completion
+        shell: bash
+        run: |
+          set -e
+          cd convoy
+          for d in 0 1 2; do
+            wins=0
+            for s in $(seq 1 20); do
+              line=$(./build/convoy_headless -s "$s" -B -e 0 -D "$d" -o /tmp)
+              case "$line" in
+                *STALLED*) echo "::error::seed $s difficulty $d stalled"; exit 1;;
+                *WON*)     wins=$((wins + 1));;
+              esac
+            done
+            echo "difficulty $d: $wins/20 won"
+            if [ "$wins" -eq 0 ]; then
+              echo "::error::difficulty $d never won in 20 seeds -- the game is unwinnable"
+              exit 1
+            fi
+          done
+          cd ..
+          declare -A terminal=(
+            [deepscan]="EXPEDITION COMPLETE"
+            [switchyard]="CAMPAIGN COMPLETE"
+            [last-light]="HARBOR SAFE"
+            [microcolony]="RESEARCH COMPLETE"
+            [ten-paces]="THE TOWN REMEMBERS"
+          )
+          declare -A failure=(
+            [deepscan]="SUBMERSIBLE LOST"
+            [switchyard]="NETWORK FAILED"
+            [last-light]="SOMETHING CAME ASHORE"
+            [microcolony]="CULTURE COLLAPSED"
+            [ten-paces]="YOU ARE DOWN"
+          )
+          for d in deepscan switchyard last-light microcolony ten-paces; do
+            line=$("$d"/build/*_headless -N 100)
+            echo "$line"
+            case "$line" in
+              *"${terminal[$d]}"*) ;;
+              *) echo "::error::$d did not reach its RC1 completion state"; exit 1;;
+            esac
+            case "$line" in
+              *"SWEEP "*" 100/100 completed"*) ;;
+              *) echo "::error::$d failed its 100-seed RC1 sweep"; exit 1;;
+            esac
+            loss_line=$("$d"/build/*_headless -L -N 20)
+            echo "$loss_line"
+            case "$loss_line" in
+              *"${failure[$d]}"*"SWEEP "*" 20/20 completed"*) ;;
+              *) echo "::error::$d failed its loss-path sweep"; exit 1;;
+            esac
+          done
+
+      - name: Verify deterministic campaign replay
+        shell: bash
+        run: |
+          set -e
+          for d in deepscan switchyard last-light microcolony ten-paces; do
+            "$d"/build/*_headless -s 41 -N 20 > "/tmp/$d-a"
+            "$d"/build/*_headless -s 41 -N 20 > "/tmp/$d-b"
+            cmp "/tmp/$d-a" "/tmp/$d-b"
+          done
+
+  windows:
+    name: build and smoke-test on Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installed directly rather than via setup-zig: that action resolves
+      # tagged releases against ziglang.org/builds, which only carries dev
+      # builds and 404s for 0.16.0.
+      - name: Install Zig
+        shell: pwsh
+        run: |
+          $ver = "0.16.0"
+          $url = "https://ziglang.org/download/$ver/zig-x86_64-windows-$ver.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "zig"
+          Write-Host "downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\zig.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\zig.zip" -DestinationPath $dest -Force
+          $exe = Get-ChildItem -Path $dest -Recurse -Filter zig.exe | Select-Object -First 1
+          if (-not $exe) { Write-Host "::error::zig.exe not found in archive"; exit 1 }
+          Write-Host "zig at $($exe.DirectoryName)"
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+
+      - name: Verify Zig
+        shell: bash
+        run: zig version
+
+      # Games are discovered by looking for build.sh, so adding one needs no
+      # change here.
+      - name: Build every game
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          found=0
+          for f in */build.sh; do
+            d=$(dirname "$f")
+            echo "::group::build $d"
+            ( cd "$d" && ONLY_WIN=1 ZIG=zig bash build.sh )
+            echo "::endgroup::"
+            found=1
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no games found (expected */build.sh)"
+            exit 1
+          fi
+
+      # The real point of this workflow: prove the binary actually runs on the
+      # platform it targets. A game that renders perfectly in a headless harness
+      # can still die on window creation or audio init.
+      - name: Smoke-test and screenshot
+        shell: pwsh
+        run: |
+          $exes = Get-ChildItem -Recurse -Filter *.exe |
+                  Where-Object { $_.FullName -match '[\\/]build[\\/]' }
+          if (-not $exes) { Write-Host "::error::no executables were built"; exit 1 }
+
+          New-Item -ItemType Directory -Force -Path shots | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class WindowProbe {
+            [StructLayout(LayoutKind.Sequential)]
+            public struct RECT { public int Left, Top, Right, Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(
+              IntPtr hWnd, out RECT rect);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(
+              IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindowAsync(
+              IntPtr hWnd, int command);
+          }
+          "@
+          $failed = $false
+
+          function Capture-Window([IntPtr] $handle) {
+            $rect = New-Object WindowProbe+RECT
+            if (-not [WindowProbe]::GetWindowRect($handle, [ref]$rect)) {
+              throw "GetWindowRect failed"
+            }
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            if ($width -lt 640 -or $height -lt 480) {
+              throw "unexpected window bounds ${width}x${height}"
+            }
+            $bmp = New-Object System.Drawing.Bitmap $width, $height
+            $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+            $gfx.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bmp.Size)
+            $gfx.Dispose()
+            return $bmp
+          }
+
+          function Count-SampledChanges(
+            [System.Drawing.Bitmap] $before,
+            [System.Drawing.Bitmap] $after
+          ) {
+            $changed = 0
+            $width = [Math]::Min($before.Width, $after.Width)
+            $height = [Math]::Min($before.Height, $after.Height)
+            for ($y = 24; $y -lt $height; $y += 8) {
+              for ($x = 0; $x -lt $width; $x += 8) {
+                if ($before.GetPixel($x, $y).ToArgb() -ne
+                    $after.GetPixel($x, $y).ToArgb()) {
+                  $changed++
+                }
+              }
+            }
+            return $changed
+          }
+
+          foreach ($e in $exes) {
+            Write-Host "launching $($e.Name)"
+            $p = Start-Process -FilePath $e.FullName -PassThru
+
+            # Wait for a real top-level window, not merely a live process.
+            $deadline = (Get-Date).AddSeconds(15)
+            do {
+              Start-Sleep -Milliseconds 200
+              $p.Refresh()
+            } while ($p.MainWindowHandle -eq 0 -and
+                     -not $p.HasExited -and (Get-Date) -lt $deadline)
+
+            if ($p.HasExited) {
+              Write-Host "::error::$($e.Name) exited early with code $($p.ExitCode)"
+              $failed = $true
+              continue
+            }
+            if ($p.MainWindowHandle -eq 0) {
+              Write-Host "::error::$($e.Name) did not create a main window"
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              $failed = $true
+              continue
+            }
+
+            $handle = $p.MainWindowHandle
+            $null = [WindowProbe]::ShowWindowAsync($handle, 9)
+            $null = [WindowProbe]::SetForegroundWindow($handle)
+            Start-Sleep -Seconds 1
+            $title = Capture-Window $handle
+            $title.Save("shots/$($e.BaseName)-title.png",
+                        [System.Drawing.Imaging.ImageFormat]::Png)
+
+            # Exercise the title transition, game input, help path and mute
+            # path rather than proving only that an idle title window exists.
+            $null = [WindowProbe]::SetForegroundWindow($handle)
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+            Start-Sleep -Seconds 1
+            [System.Windows.Forms.SendKeys]::SendWait("ZXCV")
+            [System.Windows.Forms.SendKeys]::SendWait("H")
+            [System.Windows.Forms.SendKeys]::SendWait("M")
+            Start-Sleep -Seconds 3
+
+            $gameplay = Capture-Window $handle
+            $gameplay.Save("shots/$($e.BaseName)-gameplay.png",
+                           [System.Drawing.Imaging.ImageFormat]::Png)
+            $changes = Count-SampledChanges $title $gameplay
+            $title.Dispose()
+            $gameplay.Dispose()
+
+            # A live but unfocused title window used to pass this job. Require
+            # substantial rendered change after Enter so gameplay is evidenced.
+            if ($changes -lt 500) {
+              Write-Host "::error::$($e.Name) did not leave its title frame " +
+                         "($changes sampled pixels changed)"
+              $failed = $true
+            } else {
+              Write-Host "$($e.Name) entered gameplay; " +
+                         "$changes sampled pixels changed"
+            }
+
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+
+          if ($failed) { exit 1 }
+
+      - name: Report sizes
+        shell: bash
+        run: |
+          LIMIT=1474560
+          {
+            echo "| binary | bytes | % of floppy |"
+            echo "|---|---:|---:|"
+            find . -path '*/build/*.exe' | while read -r f; do
+              b=$(stat -c%s "$f")
+              p=$(awk -v b="$b" -v l="$LIMIT" 'BEGIN{printf "%.2f", b*100/l}')
+              echo "| $(basename "$f") | $b | ${p}% |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload executables and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            */build/*.exe
+            shots/*.png
+          if-no-files-found: warn
