@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Living Rusted Tankard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap" rel="stylesheet">
+    <style>
+        .medieval-font {
+            font-family: 'MedievalSharp', cursive;
+        }
+        .narrative-feed {
+            height: calc(100vh - 200px);
+        }
+        .sidebar {
+            height: calc(100vh - 1rem);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200">
+    <div class="flex h-screen p-4 gap-4">
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col">
+            <header class="bg-gray-800 p-4 rounded-lg shadow-lg mb-4 flex justify-between items-center">
+                <h1 class="text-3xl font-bold text-amber-500 medieval-font">The Living Rusted Tankard</h1>
+                <button id="settings-btn" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1 rounded">
+                    ⚙️ Settings
+                </button>
+            </header>
+            
+            <!-- Settings Modal -->
+            <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+                <div class="bg-gray-800 p-6 rounded-lg shadow-xl max-w-md w-full">
+                    <h2 class="text-xl font-bold text-amber-500 mb-4">Game Settings</h2>
+                    
+                    <div class="mb-4">
+                        <label class="block text-gray-300 mb-2">Ollama URL</label>
+                        <input type="text" id="ollama-url-input" class="w-full bg-gray-700 text-white p-2 rounded-lg" 
+                               placeholder="http://localhost:11434" value="http://localhost:11434">
+                        <p class="text-xs text-gray-400 mt-1">URL of your Ollama server</p>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label class="block text-gray-300 mb-2">AI Model</label>
+                        <select id="model-select" class="w-full bg-gray-700 text-white p-2 rounded-lg">
+                            <option value="long-gemma:latest">long-gemma:latest</option>
+                            <option value="llama3:8b">llama3:8b</option>
+                            <option value="llama3.1:8b">llama3.1:8b</option>
+                            <option value="mistral-small:24b">mistral-small:24b</option>
+                            <option value="phi3:14b-medium-128k-instruct-q8_0">phi3:14b</option>
+                            <option value="gemma2:9b">gemma2:9b</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <button id="test-connection-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded w-full">
+                            Test Ollama Connection
+                        </button>
+                        <p id="connection-status" class="text-xs mt-1 text-gray-400">Connection status will appear here</p>
+                    </div>
+                    
+                    <div class="flex justify-end space-x-3 mt-6">
+                        <button id="close-settings-btn" class="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded">
+                            Cancel
+                        </button>
+                        <button id="save-settings-btn" class="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded">
+                            Save Settings
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Narrative Feed -->
+            <div class="narrative-feed bg-gray-800 p-4 rounded-lg shadow-lg overflow-y-auto mb-4">
+                <div id="narrative-content" class="space-y-4">
+                    <!-- Narrative messages will be inserted here -->
+                    <div class="text-amber-100 italic text-center py-4">
+                        🍺 Preparing your adventure...
+                    </div>
+                </div>
+                
+                <!-- Memory indicator -->
+                <div id="memory-indicator" class="hidden fixed bottom-4 right-4 bg-purple-600 text-white px-3 py-2 rounded-lg shadow-lg z-50">
+                    <span class="text-sm">📝 Memory recorded</span>
+                </div>
+            </div>
+            
+            <!-- Input Area -->
+            <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
+                <div class="flex gap-2">
+                    <input 
+                        type="text" 
+                        id="command-input" 
+                        class="flex-1 bg-gray-700 text-white p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        placeholder="What would you like to do?"
+                        autofocus
+                    >
+                    <button 
+                        id="submit-btn"
+                        class="bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-6 rounded-lg transition-colors"
+                    >
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Sidebar -->
+        <div class="w-80 bg-gray-800 rounded-lg shadow-lg p-4 sidebar overflow-y-auto">
+            <!-- Time -->
+            <div class="mb-6">
+                <h2 class="text-lg font-bold text-amber-400 mb-2 border-b border-gray-700 pb-2">Time</h2>
+                <div id="game-time" class="text-center text-xl">Morning, Day 1</div>
+            </div>
+            
+            <!-- Gold -->
+            <div class="mb-6">
+                <h2 class="text-lg font-bold text-amber-400 mb-2 border-b border-gray-700 pb-2">Gold</h2>
+                <div id="gold-amount" class="flex items-center justify-center">
+                    <span class="text-yellow-400 text-2xl">10</span>
+                    <span class="ml-1">gp</span>
+                </div>
+            </div>
+            
+            <!-- Inventory -->
+            <div class="mb-6">
+                <h2 class="text-lg font-bold text-amber-400 mb-2 border-b border-gray-700 pb-2">Inventory</h2>
+                <ul id="inventory-list" class="space-y-1">
+                    <li>• Rusty Dagger</li>
+                    <li>• Leather Armor</li>
+                    <li>• Health Potion (2)</li>
+                    <li>• Torch</li>
+                </ul>
+            </div>
+            
+            <!-- Active Quests -->
+            <div>
+                <h2 class="text-lg font-bold text-amber-400 mb-2 border-b border-gray-700 pb-2">Active Quests</h2>
+                <ul id="quest-list" class="space-y-2">
+                    <li class="bg-gray-700 p-2 rounded">
+                        <div class="font-bold">The Missing Ale</div>
+                        <div class="text-sm text-gray-300">Find the tavern's stolen ale recipe</div>
+                    </li>
+                    <li class="bg-gray-700 p-2 rounded">
+                        <div class="font-bold">Rat Infestation</div>
+                        <div class="text-sm text-gray-300">Clear the cellar of rats (3/5)</div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Game state and session management
+        let gameState = {
+            time: 'Morning, Day 1',
+            gold: 10,
+            inventory: [],
+            active_bounties: [],
+            status_effects: []
+        };
+        
+        let sessionId = localStorage.getItem('gameSessionId');
+        let commandHistory = [];
+        let historyIndex = -1;
+        let isLoading = false;
+
+        // DOM Elements
+        const commandInput = document.getElementById('command-input');
+        const submitBtn = document.getElementById('submit-btn');
+        const narrativeContent = document.getElementById('narrative-content');
+        const gameTimeElement = document.getElementById('game-time');
+        const goldAmountElement = document.getElementById('gold-amount');
+        const inventoryListElement = document.getElementById('inventory-list');
+        const questListElement = document.getElementById('quest-list');
+        const memoryIndicator = document.getElementById('memory-indicator');
+
+        // Add a message to the narrative feed
+        function addNarrative(text, isPlayer = false) {
+            const message = document.createElement('div');
+            message.className = isPlayer 
+                ? 'text-amber-300 font-bold' 
+                : 'text-gray-200';
+            
+            // Check if this is a system message with conversation options (case insensitive)
+            const optionsRegex = /\[options?:\s*([^\]]+)\]/i;
+            const optionsMatch = text.match(optionsRegex);
+            
+            if (!isPlayer && optionsMatch) {
+                // Split the text into narrative and options
+                const narrativeText = text.replace(optionsRegex, '').trim();
+                let optionsText = optionsMatch[1].trim();
+                
+                // Format the narrative part
+                message.textContent = narrativeText;
+                narrativeContent.appendChild(message);
+                
+                // Create a styled container for options
+                const optionsContainer = document.createElement('div');
+                optionsContainer.className = 'bg-gray-700 rounded-lg p-3 mt-2 mb-4';
+                
+                // Add a header
+                const optionsHeader = document.createElement('div');
+                optionsHeader.className = 'text-amber-400 font-bold mb-2';
+                optionsHeader.textContent = 'Conversation Options:';
+                optionsContainer.appendChild(optionsHeader);
+                
+                // Parse options - handle both newline-separated and inline numbered formats
+                let optionItems = [];
+                
+                // First try splitting by newlines (multi-line format)
+                const optionLines = optionsText.split('\n');
+                if (optionLines.length > 1) {
+                    // Multi-line format
+                    optionItems = optionLines.map(line => line.trim()).filter(line => line.length > 0);
+                } else {
+                    // Single line format - split by numbers (1. 2. 3. etc.)
+                    const numberPattern = /\d+\.\s*/g;
+                    const parts = optionsText.split(numberPattern);
+                    
+                    // Remove empty first element if it exists
+                    if (parts[0].trim() === '') {
+                        parts.shift();
+                    }
+                    
+                    optionItems = parts.map(part => part.trim()).filter(part => part.length > 0);
+                }
+                
+                console.log('Debug - Options text:', optionsText);
+                console.log('Debug - Parsed option items:', optionItems);
+                
+                optionItems.forEach((optionText, index) => {
+                    if (!optionText) return;
+                    
+                    console.log(`Debug - Processing option ${index}:`, optionText);
+                    
+                    const optionButton = document.createElement('button');
+                    optionButton.className = 'bg-gray-600 hover:bg-gray-500 text-white rounded px-3 py-1 my-1 block w-full text-left transition-colors';
+                    
+                    // Display text with number if it doesn't already have one
+                    const displayText = optionText.match(/^\d+\./) ? optionText : `${index + 1}. ${optionText}`;
+                    optionButton.textContent = displayText;
+                    
+                    // Make the option clickable
+                    optionButton.addEventListener('click', () => {
+                        // Remove the number and period from the beginning if present
+                        const cleanOptionText = optionText.replace(/^\d+\.\s*/, '');
+                        console.log('Debug - Clicking option:', cleanOptionText);
+                        
+                        commandInput.value = cleanOptionText;
+                        
+                        // Add a small delay to show the selection, then execute
+                        setTimeout(() => {
+                            handleCommand();
+                        }, 200);
+                    });
+                    
+                    optionsContainer.appendChild(optionButton);
+                });
+                
+                narrativeContent.appendChild(optionsContainer);
+            } else {
+                // Regular message
+                message.textContent = isPlayer ? `> ${text}` : text;
+                narrativeContent.appendChild(message);
+            }
+            
+            narrativeContent.scrollTop = narrativeContent.scrollHeight;
+        }
+
+        // Update the UI with the current game state
+        function updateUI() {
+            // Clear loading state
+            setLoading(false);
+            
+            // Update time
+            if (gameState.time) {
+                gameTimeElement.textContent = gameState.time;
+            }
+            
+            // Update gold
+            if (gameState.gold !== undefined) {
+                goldAmountElement.innerHTML = `
+                    <span class="text-yellow-400 text-2xl">${gameState.gold}</span>
+                    <span class="ml-1">gp</span>
+                `;
+            }
+            
+            // Update inventory
+            if (gameState.inventory) {
+                inventoryListElement.innerHTML = '';
+                
+                if (Array.isArray(gameState.inventory) && gameState.inventory.length > 0) {
+                    gameState.inventory.forEach(item => {
+                        const li = document.createElement('li');
+                        if (typeof item === 'string') {
+                            li.textContent = `• ${item}`;
+                        } else if (item.name) {
+                            let itemText = `• ${item.name}`;
+                            if (item.quantity && item.quantity > 1) {
+                                itemText += ` (${item.quantity})`;
+                            }
+                            li.textContent = itemText;
+                        }
+                        inventoryListElement.appendChild(li);
+                    });
+                } else {
+                    inventoryListElement.innerHTML = '<li>Your inventory is empty</li>';
+                }
+            }
+            
+            // Update quests/bounties
+            questListElement.innerHTML = '';
+            const bounties = gameState.active_bounties || [];
+            
+            if (Array.isArray(bounties) && bounties.length > 0) {
+                bounties.forEach(bounty => {
+                    const li = document.createElement('li');
+                    li.className = 'bg-gray-700 p-2 rounded';
+                    
+                    // Handle different bounty formats
+                    if (typeof bounty === 'string') {
+                        // Simple string format
+                        li.innerHTML = `<div class="font-bold">${bounty}</div>`;
+                    } else if (bounty.title) {
+                        // Object with title and description
+                        li.innerHTML = `
+                            <div class="font-bold">${bounty.title}</div>
+                            <div class="text-sm text-gray-300">${bounty.description || ''}</div>
+                        `;
+                    }
+                    
+                    questListElement.appendChild(li);
+                });
+            } else {
+                questListElement.innerHTML = '<li class="italic text-gray-400">No active quests</li>';
+            }
+        }
+        
+        // Set loading state
+        function setLoading(isLoading) {
+            if (isLoading) {
+                submitBtn.disabled = true;
+                submitBtn.innerText = 'Sending...';
+                submitBtn.classList.add('opacity-50');
+                commandInput.disabled = true;
+            } else {
+                submitBtn.disabled = false;
+                submitBtn.innerText = 'Send';
+                submitBtn.classList.remove('opacity-50');
+                commandInput.disabled = false;
+                commandInput.focus();
+            }
+        }
+
+        // Fetch the current game state from the server
+        async function fetchGameState() {
+            if (!sessionId) {
+                // Create a new session first by sending an empty command
+                await sendCommand('help');
+                return;
+            }
+            
+            try {
+                setLoading(true);
+                const response = await fetch(`/state/${sessionId}`);
+                
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        // Session not found, reset and create a new one
+                        localStorage.removeItem('gameSessionId');
+                        sessionId = null;
+                        addNarrative('Starting a new game session...');
+                        await sendCommand('help');
+                        return;
+                    }
+                    throw new Error(`Server responded with ${response.status}`);
+                }
+                
+                const data = await response.json();
+                gameState = data.game_state;
+                updateUI();
+                
+                // Process any events
+                if (data.events && data.events.length > 0) {
+                    data.events.forEach(event => {
+                        addNarrative(event.message || event.text || 'Event occurred');
+                    });
+                }
+            } catch (error) {
+                console.error('Error fetching game state:', error);
+                addNarrative('Error connecting to the game server. Please try refreshing the page.');
+                setLoading(false);
+            }
+        }
+
+        // Send a command to the server
+        async function sendCommand(command) {
+            try {
+                setLoading(true);
+                
+                // Add to command history
+                if (command.trim() && (commandHistory.length === 0 || commandHistory[commandHistory.length - 1] !== command)) {
+                    commandHistory.push(command);
+                    historyIndex = commandHistory.length;
+                }
+                
+                const response = await fetch('/command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                        input: command,
+                        session_id: sessionId
+                    }),
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server responded with ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Save session ID
+                if (data.session_id && (!sessionId || sessionId !== data.session_id)) {
+                    sessionId = data.session_id;
+                    localStorage.setItem('gameSessionId', sessionId);
+                    console.log(`Game session ID: ${sessionId}`);
+                }
+                
+                // Update game state
+                gameState = data.game_state;
+                updateUI();
+                
+                // Add response to narrative
+                if (data.output) {
+                    addNarrative(data.output);
+                }
+                
+                // Process any events
+                if (data.events && data.events.length > 0) {
+                    data.events.forEach(event => {
+                        if (event.type === 'memory') {
+                            // Show memory indicator for memory events
+                            showMemoryIndicator(event.count || 1);
+                        } else if (event.type === 'action_result') {
+                            // Handle action result events with special formatting
+                            const actionType = event.action_type || 'action';
+                            const message = event.message || 'Action completed';
+                            addNarrative(`📋 ${actionType.toUpperCase()}: ${message}`);
+                        } else {
+                            addNarrative(event.message || event.text || 'Event occurred');
+                        }
+                    });
+                }
+                
+                // Scroll to show the new response after a brief delay
+                setTimeout(scrollToBottom, 300);
+            } catch (error) {
+                console.error('Error sending command:', error);
+                addNarrative('Error sending command to the server. Please try again.');
+                setLoading(false);
+            }
+        }
+        
+        // Navigate command history
+        function navigateHistory(direction) {
+            if (commandHistory.length === 0) return;
+            
+            if (direction === 'up') {
+                historyIndex = Math.max(0, historyIndex - 1);
+            } else if (direction === 'down') {
+                historyIndex = Math.min(commandHistory.length, historyIndex + 1);
+            }
+            
+            if (historyIndex < commandHistory.length) {
+                commandInput.value = commandHistory[historyIndex];
+            } else {
+                commandInput.value = '';
+            }
+        }
+
+        // Scroll to bottom of narrative feed smoothly
+        function scrollToBottom() {
+            narrativeContent.scrollTo({
+                top: narrativeContent.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
+        
+        // Show memory indicator
+        function showMemoryIndicator(count = 1) {
+            const indicator = memoryIndicator;
+            const span = indicator.querySelector('span');
+            
+            if (count === 1) {
+                span.textContent = '📝 Memory recorded';
+            } else {
+                span.textContent = `📝 ${count} memories recorded`;
+            }
+            
+            indicator.classList.remove('hidden');
+            
+            // Hide after 3 seconds
+            setTimeout(() => {
+                indicator.classList.add('hidden');
+            }, 3000);
+        }
+
+        // Handle command input
+        function handleCommand() {
+            const command = commandInput.value.trim();
+            if (!command) return;
+
+            // Add player command to narrative
+            addNarrative(command, true);
+            commandInput.value = '';
+
+            // Scroll to show the player's command
+            setTimeout(scrollToBottom, 100);
+
+            // Send command to server
+            sendCommand(command);
+        }
+
+        // Ollama LLM configuration functions
+        async function testOllamaConnection() {
+            const ollamaUrl = document.getElementById('ollama-url-input').value.trim();
+            const model = document.getElementById('model-select').value;
+            const connectionStatus = document.getElementById('connection-status');
+            
+            if (!ollamaUrl) {
+                connectionStatus.textContent = 'Please enter an Ollama URL';
+                connectionStatus.className = 'text-xs mt-1 text-red-400';
+                return;
+            }
+            
+            try {
+                connectionStatus.textContent = 'Testing connection...';
+                connectionStatus.className = 'text-xs mt-1 text-blue-400';
+                
+                const response = await fetch('/llm-config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        ollama_url: ollamaUrl,
+                        model: model
+                    }),
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server responded with ${response.status}`);
+                }
+                
+                const result = await response.json();
+                if (result.success && result.ollama_connected) {
+                    connectionStatus.textContent = result.model_available 
+                        ? `Connected successfully! Model "${model}" is available.` 
+                        : `Connected to Ollama, but model "${model}" is not available. Available models: ${result.available_models?.join(', ') || 'none'}`;
+                    connectionStatus.className = result.model_available 
+                        ? 'text-xs mt-1 text-green-400' 
+                        : 'text-xs mt-1 text-yellow-400';
+                } else {
+                    connectionStatus.textContent = `Connection failed: ${result.message}`;
+                    connectionStatus.className = 'text-xs mt-1 text-red-400';
+                }
+            } catch (error) {
+                console.error('Error testing Ollama connection:', error);
+                connectionStatus.textContent = `Error: ${error.message}`;
+                connectionStatus.className = 'text-xs mt-1 text-red-400';
+            }
+        }
+        
+        async function saveLLMSettings() {
+            const ollamaUrl = document.getElementById('ollama-url-input').value.trim();
+            const model = document.getElementById('model-select').value;
+            const connectionStatus = document.getElementById('connection-status');
+            
+            if (!ollamaUrl) {
+                alert('Ollama URL is required');
+                return;
+            }
+            
+            try {
+                setLoading(true);
+                const response = await fetch('/llm-config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        ollama_url: ollamaUrl,
+                        model: model
+                    }),
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server responded with ${response.status}`);
+                }
+                
+                const result = await response.json();
+                if (result.success && result.ollama_connected) {
+                    // Save settings to localStorage
+                    localStorage.setItem('ollama_url', ollamaUrl);
+                    localStorage.setItem('ollama_model', model);
+                    
+                    // Close the modal
+                    toggleSettingsModal(false);
+                    
+                    if (result.model_available) {
+                        // Show success message
+                        addNarrative(`AI Game Master activated using ${model} on Ollama! You can now interact in natural language.`, false);
+                    } else {
+                        // Show warning about missing model
+                        addNarrative(`Connected to Ollama, but model "${model}" is not available. Please pull it with "ollama pull ${model}" or choose another model in settings.`, false);
+                    }
+                } else {
+                    alert('Failed to connect to Ollama: ' + (result.message || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error saving Ollama settings:', error);
+                alert('Error saving settings: ' + error.message);
+            } finally {
+                setLoading(false);
+            }
+        }
+        
+        function toggleSettingsModal(show) {
+            const modal = document.getElementById('settings-modal');
+            if (show) {
+                modal.classList.remove('hidden');
+            } else {
+                modal.classList.add('hidden');
+            }
+        }
+        
+        // Initialize the game
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set up command input event listeners
+            commandInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    handleCommand();
+                } else if (e.key === 'ArrowUp') {
+                    navigateHistory('up');
+                    e.preventDefault();
+                } else if (e.key === 'ArrowDown') {
+                    navigateHistory('down');
+                    e.preventDefault();
+                }
+            });
+            
+            submitBtn.addEventListener('click', handleCommand);
+            
+            // Set up settings modal handlers
+            document.getElementById('settings-btn').addEventListener('click', () => {
+                // Load saved values if available
+                const savedUrl = localStorage.getItem('ollama_url') || 'http://localhost:11434';
+                const savedModel = localStorage.getItem('ollama_model') || 'long-gemma';
+                
+                document.getElementById('ollama-url-input').value = savedUrl;
+                document.getElementById('model-select').value = savedModel;
+                
+                toggleSettingsModal(true);
+            });
+            
+            document.getElementById('close-settings-btn').addEventListener('click', () => {
+                toggleSettingsModal(false);
+            });
+            
+            document.getElementById('save-settings-btn').addEventListener('click', saveLLMSettings);
+            document.getElementById('test-connection-btn').addEventListener('click', testOllamaConnection);
+            
+            // Load initial game state
+            fetchGameState();
+            
+            // Focus the input field
+            commandInput.focus();
+            
+            // Initial placeholder - actual welcome will come from server
+            // addNarrative('Loading your adventure...');
+            
+            // Check if Ollama settings are saved, and if so, apply them automatically
+            const savedUrl = localStorage.getItem('ollama_url');
+            const savedModel = localStorage.getItem('ollama_model');
+            if (savedUrl && savedModel) {
+                fetch('/llm-config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        ollama_url: savedUrl,
+                        model: savedModel
+                    }),
+                }).then(response => response.json())
+                .then(result => {
+                    if (result.success && result.ollama_connected) {
+                        if (result.model_available) {
+                            addNarrative(`AI Game Master activated with ${savedModel} on Ollama! You can interact using natural language.`, false);
+                        } else {
+                            addNarrative(`Connected to Ollama, but model "${savedModel}" is not available. Please pull it with "ollama pull ${savedModel}" or choose another model in settings.`, false);
+                        }
+                    } else {
+                        addNarrative('Could not connect to Ollama server. Please check the Ollama settings or make sure the server is running.', false);
+                    }
+                }).catch(error => {
+                    console.error('Error applying saved Ollama settings:', error);
+                    addNarrative('Error connecting to Ollama server. Please check your settings.', false);
+                });
+            } else {
+                // Default to localhost:11434 with long-gemma:latest
+                fetch('/llm-config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        ollama_url: 'http://localhost:11434',
+                        model: 'long-gemma:latest'
+                    }),
+                }).then(response => response.json())
+                .then(result => {
+                    if (result.success && result.ollama_connected) {
+                        if (result.model_available) {
+                            addNarrative('AI Game Master activated with long-gemma:latest on local Ollama! You can interact using natural language.', false);
+                            // Save these default settings
+                            localStorage.setItem('ollama_url', 'http://localhost:11434');
+                            localStorage.setItem('ollama_model', 'long-gemma:latest');
+                        } else {
+                            addNarrative('Connected to Ollama, but the "long-gemma:latest" model is not available. Please pull it with "ollama pull long-gemma" or choose another model in settings.', false);
+                        }
+                    } else {
+                        addNarrative('For enhanced AI Game Master features, click the ⚙️ Settings button to configure your Ollama connection.', false);
+                    }
+                }).catch(error => {
+                    console.error('Error connecting to default Ollama server:', error);
+                    addNarrative('For enhanced AI Game Master features, click the ⚙️ Settings button to configure your Ollama connection.', false);
+                });
+            }
+        });
+    </script>
+</body>
+</html>

@@ -15,6 +15,7 @@ nothing is functionally integrated; this is one roof, not one codebase.
 | [game-implementations](games/game-implementations/) | Educational Python games: Pong variants, DiceCards, QuantumChess prototype, 4X strategy components | Python |
 | [mazes](games/mazes/) | Maze generation (5 algorithms) + AI toolkit (LLM clients, synthetic data, board-game generator) | Python |
 | [physics-demos](games/physics-demos/) | Genesis-framework physics demos (robot arm, elastic dragon, fluid sim) | Python |
+| [taverna](games/taverna/) | LLM-driven text RPG — "The Living Rusted Tankard": fantasy-tavern adventure with LLM interaction over persisted game state, FastAPI server, Three.js demo, JSON world data | Python, pytest, FastAPI, Three.js |
 
 ## Running a game
 

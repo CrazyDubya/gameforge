@@ -1,0 +1,161 @@
+{
+  "npc_definitions": [
+    {
+      "id": "gene_bartender",
+      "name": "Gene",
+      "description": "The grizzled bartender of The Rusted Tankard. His missing eye and scarred hands tell stories of a more adventurous past.",
+      "npc_type": "BARKEEP",
+      "disposition": "NEUTRAL",
+      "schedule": [
+        [16, 24],
+        [0, 4]
+      ],
+      "departure_chance": 0.1,
+      "visit_frequency": 0.95,
+      "gold": 500,
+      "inventory": [
+        {
+          "id": "ale",
+          "quantity": 20
+        },
+        {
+          "id": "meat_stew",
+          "quantity": 10 
+        },
+        {
+          "id": "spiced_potatoes",
+          "quantity": 10
+        },
+        {
+          "id": "travelers_ration",
+          "quantity": 7
+        },
+        {
+          "id": "mystery_brew",
+          "quantity": 5
+        },
+        {
+          "id": "whiskey",
+          "quantity": 10
+        }
+      ],
+      "relationships": {
+        "player": 0.5 
+      },
+      "conversation_topics": [
+        "The old days",
+        "Rumors in town",
+        "The mysterious locked door"
+      ],
+      "interactions": {
+        "share_secret_past": {
+          "id": "share_secret_past",
+          "name": "Ask about his adventurous past",
+          "description": "Gene looks like he might be willing to share a story or two, if you're on good terms.",
+          "action_name": "action_gene_shares_secret", 
+          "reputation_requirement": {"min_tier": "TRUSTED"}
+        },
+        "offer_rare_drink": {
+            "id": "offer_rare_drink",
+            "name": "Ask for something special (Drink)",
+            "description": "Ask Gene if he has any rare or special drinks stashed away.",
+            "action_name": "action_gene_offers_rare_drink",
+            "reputation_requirement": {"min_tier": "LIKED"}
+        }
+      }
+    },
+    {
+      "id": "serena_waitress",
+      "name": "Serena",
+      "description": "A quick-witted and observant waitress who seems to know everyone's business.",
+      "npc_type": "SERVANT",
+      "disposition": "FRIENDLY",
+      "schedule": [
+        [10, 16],
+        [18, 22]
+      ],
+      "departure_chance": 0.15,
+      "visit_frequency": 0.9,
+      "gold": 50,
+      "inventory": [
+        {
+          "id": "bread",
+          "quantity": 5
+        },
+        {
+          "id": "cheese",
+          "quantity": 5
+        }
+      ],
+      "relationships": {
+        "player": 0.3,
+        "gene_bartender": 0.7
+      },
+      "conversation_topics": [
+        "Local gossip",
+        "The strange noises at night",
+        "The missing merchant"
+      ]
+    },
+    {
+      "id": "old_man_jenkins",
+      "name": "Old Man Jenkins",
+      "description": "A regular patron who always sits in the same corner, muttering to himself.",
+      "npc_type": "PATRON",
+      "disposition": "UNFRIENDLY",
+      "schedule": [
+        [12, 22]
+      ],
+      "departure_chance": 0.3,
+      "visit_frequency": 0.7,
+      "gold": 10,
+      "inventory": [
+        {
+          "id": "whiskey",
+          "quantity": 1
+        }
+      ],
+      "relationships": {
+        "player": -0.2,
+        "gene_bartender": 0.8
+      },
+      "conversation_topics": [
+        "The good old days",
+        "Them city folk",
+        "The strange lights in the forest"
+      ]
+    },
+    {
+      "id": "travelling_merchant_elara",
+      "definition_id": "travelling_merchant_elara_def",
+      "name": "Elara, the Wandering Trader",
+      "description": "Elara is a shrewd trader with a keen eye for rare and unusual items. Her cart is laden with goods from distant lands. She doesn't stay in one place for long.",
+      "npc_type": "MERCHANT",
+      "disposition": "NEUTRAL",
+      "schedule": [[10,18]], 
+      "is_present": false, 
+      "departure_chance": 1.0, 
+      "visit_frequency": 0.25, 
+      "gold": 200,
+      "inventory": [],
+      "base_inventory_ids": [
+        "elixir_luck",
+        "map_fragment_grove",
+        "exotic_spices",
+        "bread",
+        "dagger",
+        "healing_potion_minor",
+        "spiced_potatoes",
+        "travelers_ration",
+        "mystery_brew"
+      ],
+      "relationships": {},
+      "conversation_topics": [
+        "rare_goods",
+        "distant_lands",
+        "trade_secrets"
+      ],
+      "interactions": {}
+    }
+  ]
+}

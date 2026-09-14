@@ -1,0 +1,160 @@
+{
+  "bounties": [
+    {
+      "id": "bounty_rats_001",
+      "title": "Cellar Cleanup",
+      "description": "The tavern cellar is overrun with giant rats! They're getting into the supplies. Please clear them out.",
+      "issuer": "Old Tom (Barkeep)",
+      "status": "available",
+      "objectives": [
+        {
+          "id": "obj_rats_1",
+          "description": "Clear 3 Giant Rats from the Cellar",
+          "type": "kill_target",
+          "target_id": "giant_rat",
+          "required_progress": 3,
+          "is_active": true 
+        }
+      ],
+      "rewards": {
+        "gold": 25,
+        "xp": 10
+      },
+      "prerequisites": [],
+      "is_posted": true
+    },
+    {
+      "id": "bounty_locket_001",
+      "title": "Lost Locket",
+      "description": "Mirabelle, a tavern regular, has lost her mother's precious silver locket. She believes she may have dropped it near the main tavern fireplace.",
+      "issuer": "Mirabelle",
+      "status": "available",
+      "objectives": [
+        {
+          "id": "obj_locket_1",
+          "description": "Find Mirabelle's Locket",
+          "type": "collect_item",
+          "target_id": "mirabelle_locket", 
+          "required_progress": 1,
+          "is_active": true
+        }
+      ],
+      "rewards": {
+        "gold": 15,
+        "reputation": {
+          "mirabelle": 5
+        },
+        "items": [{"item_id": "ale_token_001", "quantity": 1}] 
+      },
+      "prerequisites": [],
+      "is_posted": true
+    },
+    {
+      "id": "bounty_delivery_001",
+      "title": "Urgent Delivery",
+      "description": "I need this package delivered to Elara, the herbalist, by nightfall. She lives just outside the village, by the old willow tree. It's important, so no dawdling!",
+      "issuer": "Anonymous Patron",
+      "status": "available",
+      "objectives": [
+        {
+          "id": "obj_delivery_1",
+          "description": "Deliver package to Elara the herbalist",
+          "type": "report_to_npc",
+          "target_id": "elara_npc", 
+          "required_progress": 1,
+          "is_active": true
+        }
+      ],
+      "rewards": {
+        "gold": 35,
+        "xp": 15,
+        "reputation": {
+          "village_elders": 2
+        }
+      },
+      "prerequisites": [],
+      "is_posted": false
+    },
+    {
+      "id": "bounty_gene_special_task_001",
+      "title": "A Task for a Trusted Friend",
+      "description": "Gene needs someone discrete to handle a sensitive matter. He won't trust just anyone with this.",
+      "issuer": "gene_bartender",
+      "status": "available",
+      "is_posted": true,
+      "reputation_requirement": {"npc_id": "gene_bartender", "min_tier": "FRIENDLY"},
+      "objectives": [
+        {
+          "id": "obj_gene_task_1",
+          "description": "Retrieve a hidden package from the old mill.",
+          "type": "collect_item", 
+          "target_id": "hidden_package_mill", 
+          "required_progress": 1,
+          "is_active": true
+        },
+        {
+          "id": "obj_gene_task_2",
+          "description": "Deliver the package to Gene without opening it.",
+          "type": "report_to_npc",
+          "target_id": "gene_bartender",
+          "required_progress": 1,
+          "is_active": false
+        }
+      ],
+      "rewards": {
+        "gold": 100,
+        "xp": 75,
+        "reputation": {"gene_bartender": 15}
+      },
+      "prerequisites": []
+    },
+    {
+      "id": "bounty_rats_multi_001",
+      "title": "The Rat Problem Escalates",
+      "description": "The giant rats in the cellar were just the beginning! Their broodmother is down there, and she's huge! We need someone to take her out before she births another legion.",
+      "issuer": "gene_bartender",
+      "status": "available",
+      "is_posted": true,
+      "reputation_requirement": {"npc_id": "gene_bartender", "min_tier": "FRIENDLY"},
+      "prerequisites": ["bounty_rats_001"],
+      "objectives": [
+        {
+          "id": "objective1_rats_multi",
+          "description": "Investigate the Deep Cellar for signs of the Broodmother.",
+          "type": "discover_location",
+          "target_id": "deep_cellar", 
+          "required_progress": 1,
+          "current_progress": 0,
+          "is_completed": false,
+          "is_active": true
+        },
+        {
+          "id": "objective2_rats_multi",
+          "description": "Eliminate the Rat Broodmother.",
+          "type": "kill_target",
+          "target_id": "rat_broodmother", 
+          "required_progress": 1,
+          "current_progress": 0,
+          "is_completed": false,
+          "is_active": false
+        },
+        {
+          "id": "objective3_rats_multi",
+          "description": "Report your success to Gene.",
+          "type": "report_to_npc",
+          "target_id": "gene_bartender",
+          "required_progress": 1,
+          "current_progress": 0,
+          "is_completed": false,
+          "is_active": false
+        }
+      ],
+      "rewards": {
+        "gold": 150,
+        "xp": 100,
+        "reputation": {"gene_bartender": 15},
+        "items": [{"item_id": "ale_deluxe", "quantity": 1}]
+      }
+    }
+  ]
+}
