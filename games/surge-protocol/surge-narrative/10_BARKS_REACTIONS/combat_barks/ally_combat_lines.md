@@ -41,6 +41,9 @@ Lines spoken by companion characters during combat. Each ally has a distinct voi
 "You're hit! Fall back—I've got this!"
 "Stay with me—we're almost through!"
 "Don't you dare go down. I just fixed you!"
+"Hey—stay with me! You're not dying on my watch."
+"Walk it off. I've seen worse come through the garage."
+"Bleeding out? Patch it and get up—we're not done yet."
 
 ### Defeat/Retreat
 "We need to pull back—now!"
