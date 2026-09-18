@@ -196,6 +196,18 @@ These lines play when NPCs react to the player's visible humanity level (chrome 
 *Crosses street* "...sorry, I just remembered I need to be anywhere else."
 [VOICE: Transparent excuse]
 
+**Variant 4**
+*Backing away, hands raised* "I'm leaving, I'm leaving—please, just let me go!"
+[VOICE: Terrified plea while retreating]
+
+**Variant 5**
+*Not making eye contact* "I didn't see anything, I swear—just let me walk away!"
+[VOICE: Desperate denial]
+
+**Variant 6**
+*Voice cracking* "No no no, stay back—please!"
+[VOICE: Panicked, pleading]
+
 ### Warning Others
 **Context**: NPCs alerting companions
 
