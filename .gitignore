@@ -6,3 +6,7 @@ build/
 out/
 dist/
 .DS_Store
+
+# Rust/Tauri build cache
+**/src-tauri/target/
+*.dylib
