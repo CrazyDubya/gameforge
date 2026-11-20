@@ -788,6 +788,11 @@
             }
             
             addNarrative(text, isPlayer = false, messageType = null) {
+                const feed = this.elements.narrativeContent;
+                const priorScrollState = {
+                    nearBottom: feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100,
+                    scrollTop: feed.scrollTop
+                };
                 const message = document.createElement('div');
                 
                 let className = 'animate-fade-in ';
@@ -836,7 +841,7 @@
                 }
                 
                 // Auto-scroll to bottom
-                this.scrollToBottom(isPlayer);
+                this.scrollToBottom(isPlayer, priorScrollState);
             }
             
             formatNarrativeText(text) {
@@ -1141,12 +1146,16 @@
                 }
             }
             
-            scrollToBottom(force = false) {
+            scrollToBottom(force = false, priorScrollState = null) {
                 setTimeout(() => {
                     const el = this.elements.narrativeContent;
                     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+                    // Content growth is not scrollback. Honor a user's upward
+                    // scroll during the delay instead of forcing them to the tail.
+                    const stayedAtTail = priorScrollState && priorScrollState.nearBottom
+                        && el.scrollTop >= priorScrollState.scrollTop;
 
-                    if (force || isNearBottom) {
+                    if (force || isNearBottom || stayedAtTail) {
                         el.scrollTop = el.scrollHeight;
                     }
                 }, 100);
