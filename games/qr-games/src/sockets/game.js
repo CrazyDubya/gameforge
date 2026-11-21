@@ -61,8 +61,15 @@ function setupGameHandlers(socket, io, lobbies) {
 
       const isCorrect = checkAnswer(lobby, answer);
 
-      if (isCorrect) {
+      const questionIndex = lobby.gameState.currentQuestionIndex;
+      const awardedAnswers = (lobby.gameState.awardedAnswers ||= []);
+      const alreadyAwarded = awardedAnswers.some(
+        (award) => award.playerId === player.id && award.questionIndex === questionIndex
+      );
+
+      if (isCorrect && !alreadyAwarded) {
         player.score = (player.score || 0) + 1;
+        awardedAnswers.push({ playerId: player.id, questionIndex });
       }
 
       await lobbies.set(lobbyId, lobby);

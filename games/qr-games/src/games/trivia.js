@@ -74,6 +74,7 @@ function initializeTriviaGame(lobby) {
   lobby.gameState = {
     questions: triviaQuestions,
     currentQuestionIndex: 0,
+    awardedAnswers: [],
   };
 
   // Initialize player scores
