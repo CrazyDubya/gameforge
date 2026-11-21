@@ -698,7 +698,10 @@ def run_competition(num_mazes, width, height, maze_generators, players, leaderbo
             time_taken = end_time - start_time
             path_length = len(path) if path else float('inf')
             player.update_stats(time_taken, path_length, nodes_explored)
-            leaderboard.add_player(player)
+            # Persist this run, not the player's cumulative history again.
+            result = Player(player.name, player.algorithm)
+            result.update_stats(time_taken, path_length, nodes_explored)
+            leaderboard.add_player(result)
 
         # Save the maze visualization
         paths = {}
