@@ -184,39 +184,40 @@ def ellers_maze(width, height):
     current_set = 1
 
     for y in range(1, height, 2):
-        # Initialize cells
+        # Keep inherited sets; only cells without a connection above are new.
         for x in range(1, width, 2):
             maze[y][x] = 0
-            sets[x] = current_set
-            current_set += 1
-
-        # Create horizontal connections
-        for x in range(1, width - 2, 2):
-            if y == height - 2:
-                continue
-            if random.choice([True, False]):
-                maze[y][x + 1] = 0
-                sets[x + 2] = sets[x]
-
-        # Create vertical connections
-        next_row_sets = {}
-        for x in range(1, width, 2):
-            if random.choice([True, False]) or y == height - 2:
-                if y < height - 2:
-                    maze[y + 1][x] = 0
-                    next_row_sets[x] = sets[x]
-                else:
-                    next_row_sets[x] = sets[x]
-            else:
-                next_row_sets[x] = None
-
-        # Assign new sets where necessary
-        for x in range(1, width, 2):
-            if next_row_sets[x] is None:
+            if x not in sets:
                 sets[x] = current_set
                 current_set += 1
-            else:
-                sets[x] = next_row_sets[x]
+
+        # Join different components only. The final row must join them all.
+        for x in range(1, width - 2, 2):
+            if sets[x] != sets[x + 2] and (
+                y == height - 2 or random.choice([True, False])
+            ):
+                maze[y][x + 1] = 0
+                old_set, joined_set = sets[x + 2], sets[x]
+                for member in sets:
+                    if sets[member] == old_set:
+                        sets[member] = joined_set
+
+        if y == height - 2:
+            break
+
+        # Every component needs at least one passage into the next row.
+        groups = {}
+        for x, set_id in sets.items():
+            groups.setdefault(set_id, []).append(x)
+        next_row_sets = {}
+        for set_id, members in groups.items():
+            openings = [x for x in members if random.choice([True, False])]
+            if not openings:
+                openings = [random.choice(members)]
+            for x in openings:
+                maze[y + 1][x] = 0
+                next_row_sets[x] = set_id
+        sets = next_row_sets
 
     # Ensure entrance and exit are consistent
     maze[1][0] = 0  # Entrance at (0,1)
