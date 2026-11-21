@@ -345,17 +345,16 @@ class ChessGame:
     def to_pgn(self) -> str:
         """Export game to PGN format."""
         game = chess.pgn.Game()
+        game.setup(self.board.root())
         game.headers["Event"] = "ChessAlive Game"
         game.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
         game.headers["Result"] = self.board.result()
 
         node = game
-        temp_board = chess.Board()
         for record in self.move_history:
             node = node.add_variation(record.move)
             if record.commentary:
                 node.comment = record.commentary
-            temp_board.push(record.move)
 
         return str(game)
 
