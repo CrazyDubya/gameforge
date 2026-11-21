@@ -269,9 +269,10 @@ export class SaveDataLoader {
     }
 
     const char = loadResult.restoredData.character;
+    const statements: D1PreparedStatement[] = [];
 
     // Update character core data
-    await this.db
+    statements.push(this.db
       .prepare(`
         UPDATE characters SET
           current_tier = ?,
@@ -314,21 +315,19 @@ export class SaveDataLoader {
         char.current_location_id,
         char.total_playtime_seconds,
         characterId
-      )
-      .run();
+      ));
     changes.push('character_core');
 
     // Restore inventory if available
     if (loadResult.restoredData.inventory) {
       // Delete current inventory
-      await this.db
+      statements.push(this.db
         .prepare('DELETE FROM character_inventory WHERE character_id = ?')
-        .bind(characterId)
-        .run();
+        .bind(characterId));
 
       // Re-insert inventory items
       for (const item of loadResult.restoredData.inventory.items) {
-        await this.db
+        statements.push(this.db
           .prepare(`
             INSERT INTO character_inventory (
               id, character_id, item_id, quantity, is_equipped, equipped_slot,
@@ -347,8 +346,7 @@ export class SaveDataLoader {
             item.custom_name,
             item.acquired_from,
             item.acquired_at
-          )
-          .run();
+          ));
       }
       changes.push('inventory');
     }
@@ -356,7 +354,7 @@ export class SaveDataLoader {
     // Restore skills/attributes if available
     if (loadResult.restoredData.skills) {
       for (const attr of loadResult.restoredData.skills.attributes) {
-        await this.db
+        statements.push(this.db
           .prepare(`
             UPDATE character_attributes SET
               base_value = ?,
@@ -380,8 +378,7 @@ export class SaveDataLoader {
             attr.xp_invested,
             characterId,
             attr.attribute_id
-          )
-          .run();
+          ));
       }
       changes.push('attributes');
     }
@@ -389,7 +386,7 @@ export class SaveDataLoader {
     // Restore reputation if available
     if (loadResult.restoredData.reputation) {
       for (const rep of loadResult.restoredData.reputation.factions) {
-        await this.db
+        statements.push(this.db
           .prepare(`
             UPDATE character_reputation SET
               reputation_value = ?,
@@ -413,12 +410,13 @@ export class SaveDataLoader {
             rep.last_interaction,
             characterId,
             rep.faction_id
-          )
-          .run();
+          ));
       }
       changes.push('reputation');
     }
 
+    // D1 batches are transactional: a failed write rolls back the whole restore.
+    await this.db.batch(statements);
     return { restored: true, changes };
   }
 
