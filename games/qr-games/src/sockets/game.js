@@ -125,6 +125,11 @@ function setupGameHandlers(socket, io, lobbies) {
         return;
       }
 
+      // Match the client rule: only a number already called by the host can be marked.
+      if (!lobby.gameState?.calledNumbers?.includes(number)) {
+        return;
+      }
+
       const player = lobby.players.find((p) => p.id === socket.id);
       if (!player || !player.bingoCard) return;
 
