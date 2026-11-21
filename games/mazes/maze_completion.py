@@ -42,7 +42,7 @@ def recursive_division_maze(width, height):
     """
     Recursive Division Maze Generation Algorithm.
     """
-    maze = [[1 for _ in range(width)] for _ in range(height)]
+    maze = [[0 for _ in range(width)] for _ in range(height)]
 
     def divide(x, y, w, h, orientation):
         if w < 3 or h < 3:
@@ -51,8 +51,8 @@ def recursive_division_maze(width, height):
 
         if horizontal:
             wx = x
-            wy = y + random.randint(1, h - 2)
-            px = wx + random.randint(0, w - 1)
+            wy = y + random.randrange(1, h - 1, 2)
+            px = wx + random.randrange(0, w, 2)
             for i in range(w):
                 maze[wy][wx + i] = 1
             maze[wy][px] = 0
@@ -60,9 +60,9 @@ def recursive_division_maze(width, height):
             divide(x, y, w, wy - y, choose_orientation(w, wy - y))
             divide(x, wy + 1, w, y + h - wy - 1, choose_orientation(w, y + h - wy - 1))
         else:
-            wx = x + random.randint(1, w - 2)
+            wx = x + random.randrange(1, w - 1, 2)
             wy = y
-            py = wy + random.randint(0, h - 1)
+            py = wy + random.randrange(0, h, 2)
             for i in range(h):
                 maze[wy + i][wx] = 1
             maze[py][wx] = 0
@@ -78,7 +78,9 @@ def recursive_division_maze(width, height):
         else:
             return 'H' if random.choice([True, False]) else 'V'
 
-    # Initialize the maze with passages
+    # Keep walls on even coordinates and openings on odd coordinates, so
+    # a later partition cannot cut off an earlier opening.
+    # Enclose the initially open passage grid.
     for i in range(width):
         maze[0][i] = 1
         maze[height - 1][i] = 1
